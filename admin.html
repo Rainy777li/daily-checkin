@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#FAF7F2">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23C8956C'/><text x='50' y='68' font-size='55' text-anchor='middle' fill='white'>⚙️</text></svg>">
+  <link rel="manifest" href="manifest.json">
+  <title>管理后台 - 每日打卡</title>
+  <link rel="stylesheet" href="css/style.css">
+  <style>
+    /* 管理后台专属样式 */
+    .admin-tabs {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      padding: 8px 12px;
+      background: var(--card);
+      border-bottom: 1px solid var(--border);
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      scrollbar-width: none;
+    }
+    .admin-tabs::-webkit-scrollbar { display: none; }
+    .admin-tab {
+      flex-shrink: 0;
+      padding: 8px 14px;
+      border: none;
+      border-radius: 20px;
+      font-size: 0.8rem;
+      font-weight: 600;
+      font-family: var(--font);
+      cursor: pointer;
+      background: var(--bg);
+      color: var(--text-secondary);
+      transition: all 0.2s ease;
+      -webkit-tap-highlight-color: transparent;
+    }
+    .admin-tab.active { background: var(--primary); color: #fff; }
+
+    .admin-section { display: none; padding: 16px; }
+    .admin-section.active { display: block; }
+
+    /* 统计卡片 */
+    .stat-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 16px; }
+    .stat-card {
+      background: var(--card);
+      border-radius: var(--radius-md);
+      padding: 16px;
+      text-align: center;
+      box-shadow: var(--shadow-sm);
+    }
+    .stat-card .stat-num { font-size: 1.6rem; font-weight: 800; color: var(--primary); }
+    .stat-card .stat-desc { font-size: 0.75rem; color: var(--text-muted); margin-top: 4px; }
+
+    /* 管理列表通用 */
+    .admin-list-item {
+      display: flex; align-items: center; gap: 10px;
+      padding: 12px; background: var(--card); border-radius: var(--radius-md);
+      margin-bottom: 8px; box-shadow: var(--shadow-sm);
+    }
+    .admin-list-item .item-info { flex:1; min-width: 0; }
+    .admin-list-item .item-title { font-weight: 600; font-size: 0.9rem; }
+    .admin-list-item .item-sub  { font-size: 0.75rem; color: var(--text-muted); }
+    .admin-list-item .item-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+    /* 表单卡片 */
+    .form-card {
+      background: var(--card); border-radius: var(--radius-lg);
+      padding: 20px; margin-bottom: 12px; box-shadow: var(--shadow-sm);
+      border: 2px dashed var(--border);
+    }
+    .form-card h3 { margin-bottom: 12px; font-size: 1rem; }
+
+    /* 标签 */
+    .tag {
+      display: inline-block; padding: 3px 8px; border-radius: 10px;
+      font-size: 0.7rem; font-weight: 700;
+    }
+    .tag-active { background: var(--success-light); color: var(--success); }
+    .tag-inactive { background: var(--danger-light); color: var(--danger); }
+    .tag-pending { background: #FFF3E0; color: #E8B84B; }
+    .tag-approved { background: var(--success-light); color: var(--success); }
+    .tag-rejected { background: var(--danger-light); color: var(--danger); }
+
+    /* 截图预览 */
+    .screenshot-thumb {
+      width: 60px; height: 60px; border-radius: 8px;
+      object-fit: cover; cursor: pointer; flex-shrink: 0;
+    }
+
+    /* 大图预览弹窗 */
+    .img-preview-overlay {
+      position: fixed; inset: 0; z-index: 9999;
+      background: rgba(0,0,0,0.85); display: flex;
+      align-items: center; justify-content: center; padding: 16px;
+    }
+    .img-preview-overlay img {
+      max-width: 100%; max-height: 90vh; border-radius: 12px;
+    }
+
+    /* Top Bar */
+    .top-bar { position: sticky; top: 0; z-index: 100; }
+  </style>
+</head>
+<body>
+
+  <!-- 顶部栏 -->
+  <div class="top-bar">
+    <span class="top-bar-title">⚙️ 管理后台</span>
+    <button class="top-bar-action" id="btnBackToApp">📱 返回应用</button>
+  </div>
+
+  <!-- Tab 导航 -->
+  <div class="admin-tabs" id="adminTabs">
+    <button class="admin-tab active" data-section="dashboard">📊 仪表盘</button>
+    <button class="admin-tab" data-section="tasks">📋 任务管理</button>
+    <button class="admin-tab" data-section="users">👥 用户管理</button>
+    <button class="admin-tab" data-section="rankings">📈 榜单管理</button>
+    <button class="admin-tab" data-section="submissions">📸 截图审核</button>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 仪表盘 -->
+  <!-- ============================================ -->
+  <div class="admin-section active" id="secDashboard">
+    <div class="stat-cards" id="dashStats"></div>
+    <div class="card">
+      <div class="section-header"><span>🏆 今日打卡排行 TOP 5</span></div>
+      <div id="dashTop5"></div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 任务管理 -->
+  <!-- ============================================ -->
+  <div class="admin-section" id="secTasks">
+    <div class="form-card">
+      <h3 id="taskFormTitle">➕ 新建任务</h3>
+      <div class="form-group">
+        <label class="form-label">任务图标 (Emoji)</label>
+        <input class="form-input" type="text" id="taskIcon" placeholder="如 🏃" maxlength="4">
+      </div>
+      <div class="form-group">
+        <label class="form-label">任务名称</label>
+        <input class="form-input" type="text" id="taskName" placeholder="如 运动30分钟" maxlength="30">
+      </div>
+      <div class="form-group">
+        <label class="form-label">奖励积分</label>
+        <input class="form-input" type="number" id="taskPoints" placeholder="10" value="10" min="1" max="100">
+      </div>
+      <div class="form-group">
+        <label class="form-label">排序（数字越小越靠前）</label>
+        <input class="form-input" type="number" id="taskSort" placeholder="0" value="0" min="0" max="99">
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary btn-block" id="btnSaveTask">💾 保存</button>
+        <button class="btn btn-outline btn-block btn-sm hidden" id="btnCancelEdit">取消编辑</button>
+      </div>
+      <input type="hidden" id="editTaskId" value="">
+    </div>
+    <div id="taskListAdmin"></div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 用户管理 -->
+  <!-- ============================================ -->
+  <div class="admin-section" id="secUsers">
+    <div id="userListAdmin"></div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 榜单管理 -->
+  <!-- ============================================ -->
+  <div class="admin-section" id="secRankings">
+    <div class="form-card">
+      <h3 id="rankFormTitle">📈 录入榜单数据</h3>
+      <div class="form-group">
+        <label class="form-label">榜单分类</label>
+        <select class="form-input" id="rankCatSelect"></select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">条目名称</label>
+        <input class="form-input" type="text" id="rankItemName" placeholder="如 李煜东" maxlength="30">
+      </div>
+      <div class="form-group">
+        <label class="form-label">当前数值</label>
+        <input class="form-input" type="number" id="rankItemValue" placeholder="如 500000" min="0">
+      </div>
+      <div class="form-group">
+        <label class="form-label">上一次数值（留空则涨幅为 0）</label>
+        <input class="form-input" type="number" id="rankItemPrevValue" placeholder="留空则自动读取上次" min="0">
+      </div>
+      <button class="btn btn-primary btn-block" id="btnSaveRankItem">💾 录入/更新</button>
+      <input type="hidden" id="editRankItemId" value="">
+    </div>
+    <div id="rankItemsAdmin"></div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 截图审核 -->
+  <!-- ============================================ -->
+  <div class="admin-section" id="secSubmissions">
+    <div id="submissionsAdmin">
+      <p style="text-align:center;color:var(--text-muted);padding:20px;">加载中...</p>
+    </div>
+  </div>
+
+  <!-- 应用脚本 -->
+  <script src="js/supabase.js"></script>
+  <script src="js/admin.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+  </script>
+</body>
+</html>
