@@ -5,7 +5,12 @@
 
 // ---- 演示模式检测 ----
 const DEMO_MODE = typeof SUPABASE_CONFIGURED !== 'undefined' && !SUPABASE_CONFIGURED;
-if (DEMO_MODE) {
+
+// 检测当前是否应该用演示模式（SDK 加载失败时也降级）
+function isDemoMode() {
+  return DEMO_MODE || !supabase || window.SUPABASE_CONFIGURED_FALLBACK === false;
+}
+if (isDemoMode()) {
   console.log('🔧 演示模式 — 数据存储在本地浏览器，配置 Supabase 后自动切换');
   // 初始化演示数据 + 确保 admin 账号永远存在
   const users = JSON.parse(localStorage.getItem('demo_users') || '{}');
@@ -147,7 +152,7 @@ formLogin.addEventListener('submit', async (e) => {
   setLoading(btnLogin, true);
 
   // --- 演示模式登录 ---
-  if (DEMO_MODE) {
+  if (isDemoMode()) {
     const result = demoLogin(username, password);
     if (!result.ok) {
       showMessage(result.msg, 'error');
@@ -221,7 +226,7 @@ formRegister.addEventListener('submit', async (e) => {
   setLoading(btnRegister, true);
 
   // --- 演示模式注册 ---
-  if (DEMO_MODE) {
+  if (isDemoMode()) {
     const result = demoRegister(username, password);
     if (!result.ok) {
       showMessage(result.msg, 'error');
@@ -267,13 +272,14 @@ formRegister.addEventListener('submit', async (e) => {
       setLoading(btnRegister, false);
     }
   } catch (err) {
-    showMessage('网络错误，请稍后重试', 'error');
+    console.error('注册错误:', err);
+    showMessage(err.message || '网络错误，请稍后重试', 'error');
     setLoading(btnRegister, false);
   }
 });
 
 // ---- 演示模式：显示管理员信息和重置按钮 ----
-if (DEMO_MODE) {
+if (isDemoMode()) {
   document.addEventListener('DOMContentLoaded', () => {
     const users = demoGetUsers();
     const adminUser = Object.entries(users).find(([, u]) => u.is_admin);
@@ -305,7 +311,7 @@ if (DEMO_MODE) {
 
 // ---- 就绪后检查登录状态 ----
 function whenReady(fn) {
-  if (DEMO_MODE) { fn(); return; }
+  if (isDemoMode()) { fn(); return; }
   if (window.SUPABASE_CONFIGURED_FALLBACK === false) {
     console.warn('⚠️ 降级为演示模式');
     fn();
@@ -315,7 +321,7 @@ function whenReady(fn) {
 }
 
 whenReady(async function() {
-  const actualDemo = DEMO_MODE || window.SUPABASE_CONFIGURED_FALLBACK === false;
+  const actualDemo = isDemoMode();
 
   if (actualDemo) {
     if (demoGetSession()) goApp();

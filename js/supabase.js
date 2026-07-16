@@ -5,8 +5,8 @@
 
 // 从 Supabase 项目设置中获取这两个值
 // Supabase Dashboard → Settings → API
-const SUPABASE_URL = 'https://YOUR-PROJECT-ID.supabase.co';
-const SUPABASE_ANON_KEY = 'your-anon-key-here';
+const SUPABASE_URL = 'https://afgrrqpyvcfmkcrivyuu.supabase.co';
+const SUPABASE_ANON_KEY = 'sb_publishable_8GlaFi0wjrYjCvxFWtCI5Q_ln4Np51R';
 
 // 检测是否已配置（替换了占位符）
 const SUPABASE_CONFIGURED =
@@ -19,20 +19,18 @@ const EMAIL_DOMAIN = '@checkin.app';
 // Supabase 客户端（按需初始化）
 let supabase = null;
 
-// 仅在已配置时动态加载 Supabase SDK
+// 仅在已配置时加载 Supabase SDK（使用本地文件，无需CDN）
 if (SUPABASE_CONFIGURED) {
   (function loadSupabaseSDK() {
     var script = document.createElement('script');
-    script.src = 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js';
+    script.src = 'js/supabase-sdk.min.js';
     script.onload = function() {
       supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
       console.log('✅ Supabase 已连接');
-      // 触发自定义事件，通知其他脚本 Supabase 已就绪
       window.dispatchEvent(new Event('supabase-ready'));
     };
     script.onerror = function() {
-      console.warn('⚠️ Supabase SDK 加载失败（网络不可达），切换为演示模式');
-      // 降级为演示模式：把 SUPABASE_CONFIGURED 覆盖为 false
+      console.warn('⚠️ Supabase SDK 加载失败，切换为演示模式');
       window.SUPABASE_CONFIGURED_FALLBACK = false;
       window.dispatchEvent(new Event('supabase-ready'));
     };

@@ -6,12 +6,15 @@
 // ---- 演示模式检测 ----
 let DEMO_MODE = typeof SUPABASE_CONFIGURED !== 'undefined' && !SUPABASE_CONFIGURED;
 
+function isDemoMode() {
+  return DEMO_MODE || !supabase || window.SUPABASE_CONFIGURED_FALLBACK === false;
+}
+
 // 监听 SDK 加载失败降级
 window.addEventListener('supabase-ready', () => {
   if (window.SUPABASE_CONFIGURED_FALLBACK === false) {
     DEMO_MODE = true;
     console.warn('⚠️ 降级为演示模式');
-    initApp();
   }
 });
 
@@ -271,6 +274,12 @@ function renderTasks(tasks) {
     return;
   }
 
+  // 读取待审核提交记录，用于显示 ⏳ 状态
+  const submissions = demoLoad('demo_submissions', []);
+  const pendingTasks = new Set();
+  submissions.filter(s => s.status === 'pending' && s.username === currentProfile?.username)
+    .forEach(s => pendingTasks.add(s.task_id));
+
   const completedCount = tasks.filter(t => todayCheckins.includes(t.id)).length;
   const totalCount = tasks.length;
 
@@ -283,23 +292,71 @@ function renderTasks(tasks) {
     </p>
     ${tasks.map(task => {
       const isCompleted = todayCheckins.includes(task.id);
+      const isJumpActive = currentJumpTaskId === task.id;
+      const isPendingReview = pendingTasks.has(task.id);
+
+      // 确定圆圈显示内容
+      let checkContent = '';
+      let checkStyle = '';
+      if (isJumpActive) {
+        checkContent = '🔒';
+        checkStyle = 'border-color:var(--primary);color:var(--primary);';
+      } else if (isPendingReview) {
+        checkContent = '⏳';
+        checkStyle = 'border-color:var(--warning);color:var(--warning);';
+      } else if (isCompleted) {
+        checkContent = '✅';
+      }
+
       return `
         <div class="task-card ${isCompleted ? 'completed' : ''}"
-             data-task-id="${task.id}" data-task-points="${task.points}">
+             data-task-id="${task.id}" data-task-points="${task.points}"
+             data-pending="${isPendingReview ? 'true' : 'false'}">
           <span class="task-icon">${task.icon}</span>
           <div class="task-info">
             <div class="task-name">${task.name}</div>
-            <div class="task-points">+${task.points} 积分</div>
+            <div class="task-points">+${task.points} 积分${isPendingReview ? ' · 待审核' : ''}</div>
           </div>
-          <div class="task-check">${isCompleted ? '✅' : ''}</div>
+          <button class="task-jump ${isJumpActive ? 'active-jump' : ''}"
+                  data-task-id="${task.id}" data-task-points="${task.points}"
+                  data-task-name="${escapeHtml(task.name)}" title="跳转打卡">
+            📎
+          </button>
+          <div class="task-check" style="${checkStyle}">${checkContent}</div>
         </div>`;
     }).join('')}
   `;
+
+  container.querySelectorAll('.task-jump').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const taskId = parseInt(btn.dataset.taskId);
+      const taskPoints = parseInt(btn.dataset.taskPoints);
+      const taskName = btn.dataset.taskName;
+      // 如果已有待审核截图，提醒用户
+      if (pendingTasks.has(taskId)) {
+        showToast('⏳ 该任务已有截图待审核，请耐心等待', 'info');
+        return;
+      }
+      doJump(taskId, taskPoints, taskName);
+    });
+  });
 
   container.querySelectorAll('.task-card').forEach(card => {
     card.addEventListener('click', () => {
       const taskId = parseInt(card.dataset.taskId);
       const taskPoints = parseInt(card.dataset.taskPoints);
+      // 正在跳转流程中 → 引导上传截图
+      if (currentJumpTaskId === taskId) {
+        showToast('📸 请先上传截图完成打卡', 'info');
+        document.getElementById('jumpUploadCard')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        return;
+      }
+      // 待审核 → 不允许手动打卡
+      if (pendingTasks.has(taskId)) {
+        showToast('⏳ 截图审核中，通过后自动打卡并到账积分', 'info');
+        return;
+      }
       toggleCheckin(taskId, taskPoints, card);
     });
   });
@@ -1044,85 +1101,224 @@ function refreshRankings() {
 }
 
 // ============================================
-// 快捷跳转 + 截图审核
+// 快捷跳转 + 截图打卡（直接链接 + 常驻上传区）
 // ============================================
-let currentSubmissionApp = null;
-let currentScreenshotData = null;
 
-function setupJumpButtons() {
-  document.querySelectorAll('.jump-btn').forEach(btn => {
-    btn.addEventListener('click', () => {
-      const appName = btn.dataset.app;
-      const scheme = btn.dataset.scheme;
+// 跳转目标配置（后续可通过管理员后台配置）
+const JUMP_TARGETS = [
+  { id: 'xunyee', name: '寻艺点赞', url: 'https://www.xunyee.cn/', icon: '👍' },
+];
 
-      // 记录当前要提交的 App
-      currentSubmissionApp = appName;
-      currentScreenshotData = null;
+// 跳转流程状态
+let currentJumpTaskId = null;
+let currentJumpTaskPoints = 0;
+let currentJumpScreenshotData = null;
+let currentJumpTarget = null; // { name, url }
 
-      // 显示提交表单
-      document.getElementById('submissionForm').style.display = 'block';
-      document.getElementById('noSubmissionYet').style.display = 'none';
-      document.getElementById('submissionAppName').textContent = appName;
+// ---- 跳转：打开链接 + 显示上传卡片 ----
+function doJump(taskId, taskPoints, taskName) {
+  // 使用第一个跳转目标（后续可让用户选择）
+  const target = JUMP_TARGETS[0];
+  if (!target) {
+    showToast('暂无可用跳转链接', 'error');
+    return;
+  }
 
-      // 清空预览
-      const preview = document.getElementById('screenshotPreview');
-      preview.style.display = 'none';
-      preview.src = '';
-      document.getElementById('uploadArea').style.display = 'flex';
-      document.getElementById('screenshotFile').value = '';
+  currentJumpTaskId = taskId;
+  currentJumpTaskPoints = taskPoints;
+  currentJumpScreenshotData = null;
+  currentJumpTarget = target;
 
-      // 尝试跳转
-      window.open(scheme, '_blank');
-      showToast(`已尝试打开 ${appName}，完成后请返回提交截图`, 'info');
-    });
-  });
+  // 显示上传卡片
+  const card = document.getElementById('jumpUploadCard');
+  card.style.display = 'block';
+  document.getElementById('jumpUploadTaskName').textContent = taskName;
+  document.getElementById('jumpUploadTarget').innerHTML =
+    `${target.icon} ${target.name} <a href="${target.url}" target="_blank" style="font-size:0.7rem;color:var(--primary);">🔗 打开链接</a>`;
+
+  // 清空预览
+  document.getElementById('jumpScreenshotPreview').style.display = 'none';
+  document.getElementById('jumpScreenshotPreview').src = '';
+  document.getElementById('jumpUploadArea').style.display = 'flex';
+  document.getElementById('jumpScreenshotFile').value = '';
+
+  // 重置提交按钮为锁定状态
+  const submitBtn = document.getElementById('jumpBtnSubmit');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.style.background = '#E0DDD8';
+    submitBtn.style.color = '#A09990';
+    submitBtn.style.cursor = 'not-allowed';
+    submitBtn.textContent = '🔒 请先上传截图';
+  }
+
+  // 打开目标链接
+  window.open(target.url, '_blank');
+  showToast(`已打开 ${target.name}，完成后请返回上传截图`, 'info');
+
+  // 滚动到上传卡片
+  card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+
+  // 高亮当前任务
+  renderTasksWithActive();
 }
 
-function setupUploadArea() {
-  const uploadArea = document.getElementById('uploadArea');
-  const fileInput = document.getElementById('screenshotFile');
-  const preview = document.getElementById('screenshotPreview');
+function cancelJump() {
+  currentJumpTaskId = null;
+  currentJumpTaskPoints = 0;
+  currentJumpScreenshotData = null;
+  currentJumpTarget = null;
+  document.getElementById('jumpUploadCard').style.display = 'none';
+  document.getElementById('jumpScreenshotPreview').style.display = 'none';
+  document.getElementById('jumpScreenshotPreview').src = '';
+  document.getElementById('jumpUploadArea').style.display = 'flex';
+  document.getElementById('jumpScreenshotFile').value = '';
+  // 重置提交按钮为锁定状态
+  const submitBtn = document.getElementById('jumpBtnSubmit');
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.style.background = '#E0DDD8';
+    submitBtn.style.color = '#A09990';
+    submitBtn.style.cursor = 'not-allowed';
+    submitBtn.textContent = '🔒 请先上传截图';
+  }
+  // 刷新任务列表（移除高亮）
+  loadTasks().then(tasks => renderTasks(tasks));
+}
 
-  uploadArea.addEventListener('click', () => fileInput.click());
+async function renderTasksWithActive() {
+  const tasks = await loadTasks();
+  renderTasks(tasks);
+}
 
+// ---- 上传区域事件 ----
+function setupJumpUpload() {
+  const uploadArea = document.getElementById('jumpUploadArea');
+  const fileInput = document.getElementById('jumpScreenshotFile');
+  const preview = document.getElementById('jumpScreenshotPreview');
+  const submitBtn = document.getElementById('jumpBtnSubmit');
+  const cancelBtn = document.getElementById('jumpBtnCancel');
+
+  if (!uploadArea || !fileInput) {
+    console.error('❌ 截图上传元素未找到！jumpUploadArea:', !!uploadArea, 'jumpScreenshotFile:', !!fileInput);
+    return;
+  }
+  console.log('✅ 截图上传已就绪，提交按钮:', !!submitBtn, '取消按钮:', !!cancelBtn);
+
+  // 文件输入框覆盖整个上传区域（透明叠加），直接响应点击
   fileInput.addEventListener('change', () => {
     const file = fileInput.files[0];
     if (!file) return;
 
-    // 检查文件大小（最大 5MB）
-    if (file.size > 5 * 1024 * 1024) {
-      showToast('图片不能超过 5MB', 'error');
+    console.log('📷 文件已选择:', file.name, file.size);
+
+    if (file.size > 10 * 1024 * 1024) {
+      showToast('图片不能超过 10MB', 'error');
       fileInput.value = '';
       return;
     }
 
     const reader = new FileReader();
     reader.onload = () => {
-      currentScreenshotData = reader.result;
-      preview.src = reader.result;
-      preview.style.display = 'block';
-      uploadArea.style.display = 'none';
+      // 用 Canvas 压缩图片，避免 localStorage 配额溢出
+      const img = new Image();
+      img.onload = () => {
+        const MAX_W = 800;
+        let w = img.width, h = img.height;
+        if (w > MAX_W) { h = Math.round(h * (MAX_W / w)); w = MAX_W; }
+
+        const canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, w, h);
+        currentJumpScreenshotData = canvas.toDataURL('image/jpeg', 0.7);
+
+        preview.src = currentJumpScreenshotData;
+        preview.style.display = 'block';
+        uploadArea.style.display = 'none';
+
+        console.log('✅ 截图已压缩:', Math.round(currentJumpScreenshotData.length / 1024), 'KB');
+
+        // 解锁提交按钮 → 变绿
+        if (submitBtn) {
+          submitBtn.disabled = false;
+          submitBtn.style.background = '#7CB77C';
+          submitBtn.style.color = '#fff';
+          submitBtn.style.cursor = 'pointer';
+          submitBtn.textContent = '✅ 提交审核并打卡';
+        }
+        console.log('✅ 提交按钮已解锁');
+      };
+      img.onerror = () => {
+        showToast('图片加载失败，请重试', 'error');
+      };
+      img.src = reader.result;
+    };
+    reader.onerror = () => {
+      showToast('图片读取失败，请重试', 'error');
     };
     reader.readAsDataURL(file);
   });
+
+  // 点击预览图可重新选择图片
+  preview.addEventListener('click', () => {
+    preview.style.display = 'none';
+    preview.src = '';
+    currentJumpScreenshotData = null;
+    uploadArea.style.display = 'flex';
+    fileInput.value = '';
+    // 重新锁定提交按钮
+    if (submitBtn) {
+      submitBtn.disabled = true;
+      submitBtn.style.background = '#E0DDD8';
+      submitBtn.style.color = '#A09990';
+      submitBtn.style.cursor = 'not-allowed';
+      submitBtn.textContent = '🔒 请先上传截图';
+    }
+  });
+  preview.style.cursor = 'pointer';
+  preview.title = '点击更换图片';
+
+  // 取消
+  cancelBtn.addEventListener('click', cancelJump);
 }
 
-function setupSubmissionButtons() {
-  document.getElementById('btnSubmitScreenshot').addEventListener('click', async () => {
-    if (!currentScreenshotData) {
-      showToast('请先上传截图', 'error');
-      return;
-    }
-    if (!currentSubmissionApp) {
-      showToast('请先选择跳转 App', 'error');
-      return;
-    }
+// 全局函数：提交截图（由 onclick 属性绑定，最可靠）
+async function submitJumpScreenshot() {
+  console.log('📤 submitJumpScreenshot 被调用');
+  if (!currentJumpScreenshotData) {
+    showToast('请先上传截图', 'error');
+    return;
+  }
+  if (!currentJumpTarget) {
+    showToast('跳转信息丢失，请重新操作', 'error');
+    return;
+  }
+  if (!currentJumpTaskId) {
+    showToast('任务信息丢失，请重新操作', 'error');
+    return;
+  }
 
+  const taskId = currentJumpTaskId;
+  const taskPoints = currentJumpTaskPoints;
+  const submitBtn = document.getElementById('jumpBtnSubmit');
+
+  // 按钮显示加载状态
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = '⏳ 提交中...';
+  }
+
+  try {
+    // 保存提交记录
     const submission = {
       id: 'sub_' + Date.now(),
       username: currentProfile.username,
-      app_name: currentSubmissionApp,
-      screenshot: currentScreenshotData,
+      task_id: taskId,
+      app_name: currentJumpTarget.name,
+      jump_url: currentJumpTarget.url,
+      screenshot: currentJumpScreenshotData,
       status: 'pending',
       points_awarded: 0,
       submitted_at: new Date().toISOString(),
@@ -1130,58 +1326,124 @@ function setupSubmissionButtons() {
       review_comment: '',
     };
 
-    if (DEMO_MODE) {
-      const submissions = demoLoad('demo_submissions', []);
-      submissions.unshift(submission);
-      demoSave('demo_submissions', submissions);
-    } else {
-      // Supabase 模式：待实现（需要 Storage bucket）
-      // 暂时也用 localStorage
-      const submissions = demoLoad('demo_submissions', []);
-      submissions.unshift(submission);
-      demoSave('demo_submissions', submissions);
+    console.log('💾 保存提交记录...', submission.id);
+
+    // 始终存 localStorage（renderTasks 依赖它显示 ⏳ 状态）
+    {
+      try {
+        const submissions = demoLoad('demo_submissions', []);
+        submissions.unshift(submission);
+        demoSave('demo_submissions', submissions);
+        console.log('✅ 已存到 localStorage, 截图大小:', Math.round(submission.screenshot.length / 1024), 'KB');
+      } catch (lsErr) {
+        console.warn('⚠️ localStorage 存储失败，尝试去掉截图保存:', lsErr.message);
+        // 去掉截图数据后重试（至少保留审核记录）
+        const slimSubmission = { ...submission, screenshot: '' };
+        try {
+          const submissions = demoLoad('demo_submissions', []);
+          submissions.unshift(slimSubmission);
+          demoSave('demo_submissions', submissions);
+          console.log('✅ 已存元数据（不含截图）');
+        } catch (e2) {
+          console.error('❌ localStorage 完全不可用:', e2.message);
+        }
+      }
     }
 
-    // 重置表单
-    resetSubmissionForm();
-    showToast('截图已提交！等待管理员审核', 'success');
+    if (!DEMO_MODE) {
+      // 非演示模式：同步到 Supabase
+      try {
+        const { error } = await supabase.from('submissions').insert({
+          user_id: currentUser.id,
+          username: currentProfile.username,
+          task_id: taskId,
+          app_name: currentJumpTarget.name,
+          jump_url: currentJumpTarget.url,
+          screenshot: currentJumpScreenshotData,
+          status: 'pending',
+          points_awarded: 0,
+        });
+        if (error) throw error;
+        console.log('✅ 截图已同步到 Supabase');
+      } catch (err) {
+        console.warn('⚠️ Supabase 同步失败（本地已保存）:', err.message);
+      }
+    }
 
-    // 刷新历史记录
+    // 截图提交成功，但不打卡——等管理员审核通过后才打卡+积分
+    cancelJump();
+    showToast('截图已提交，等待管理员审核 ✅ 审核通过后积分自动到账', 'success');
+
+    // 刷新任务列表（更新 ⏳ 状态）和提交记录
     renderSubmissionHistory();
-  });
-
-  document.getElementById('btnCancelSubmission').addEventListener('click', resetSubmissionForm);
+    const tasks = await loadTasks();
+    renderTasks(tasks);
+  } catch (err) {
+    console.error('❌ 提交失败:', err.message, err);
+    console.error('❌ 错误堆栈:', err.stack);
+    alert('提交失败: ' + (err.message || '未知错误') + '\n请截图控制台日志发给管理员');
+    // 恢复按钮
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.style.background = '#7CB77C';
+      submitBtn.style.color = '#fff';
+      submitBtn.style.cursor = 'pointer';
+      submitBtn.textContent = '✅ 提交审核并打卡';
+    }
+    showToast('提交失败，请重试', 'error');
+  }
 }
 
-function resetSubmissionForm() {
-  currentSubmissionApp = null;
-  currentScreenshotData = null;
-  document.getElementById('submissionForm').style.display = 'none';
-  document.getElementById('noSubmissionYet').style.display = 'block';
-  document.getElementById('screenshotPreview').style.display = 'none';
-  document.getElementById('screenshotPreview').src = '';
-  document.getElementById('uploadArea').style.display = 'flex';
-  document.getElementById('screenshotFile').value = '';
+// 自动打卡（由管理员审核通过后触发，不再在提交流程中调用）
+async function autoCheckinTask(taskId, taskPoints) {
+  if (DEMO_MODE) {
+    const checkins = demoLoad('demo_checkins', {});
+    const key = `${currentProfile.username}_${todayStr()}_${taskId}`;
+    checkins[key] = {
+      user_id: currentProfile.username,
+      task_id: taskId,
+      checkin_date: todayStr(),
+      points_earned: taskPoints,
+    };
+    demoSave('demo_checkins', checkins);
+  } else {
+    await supabase
+      .from('checkins').insert({
+        user_id: currentUser.id, task_id: taskId,
+        checkin_date: todayStr(), points_earned: taskPoints
+      });
+    await supabase.from('profiles').update({ total_points: currentProfile.total_points + taskPoints }).eq('id', currentUser.id);
+  }
+
+  currentProfile.total_points += taskPoints;
+  todayCheckins.push(taskId);
+  await updateStreak();
+  await refreshCalendar();
+  refreshMyPage();
 }
 
 function renderSubmissionHistory() {
   const container = document.getElementById('submissionHistory');
+  const card = document.getElementById('submissionHistoryCard');
   if (!container) return;
 
   const submissions = demoLoad('demo_submissions', []);
   const mine = submissions.filter(s => s.username === currentProfile?.username).slice(0, 10);
 
-  if (mine.length === 0) return;
+  if (mine.length === 0) {
+    card.style.display = 'none';
+    return;
+  }
+
+  card.style.display = 'block';
 
   const statusLabels = { pending: '⏳ 审核中', approved: '✅ 已通过', rejected: '❌ 未通过' };
 
-  container.innerHTML = `
-    <div class="section-header" style="margin-top:4px;">
-      <span>📝 我的提交记录</span>
-    </div>
-    ${mine.map(s => `
+  container.innerHTML = mine.map(s => {
+    const icon = s.app_name === '寻艺点赞' ? '👍' : '📱';
+    return `
       <div class="submission-card">
-        <span>${s.app_name === '微信' ? '💬' : s.app_name === '抖音' ? '🎵' : s.app_name === '备忘录' ? '📝' : s.app_name === '网易云' ? '🎧' : s.app_name === 'Keep' ? '💪' : s.app_name === 'QQ' ? '🐧' : '📱'}</span>
+        <span>${icon}</span>
         <div class="submission-info">
           <div>${s.app_name} · ${new Date(s.submitted_at).toLocaleDateString('zh-CN')}</div>
           <div class="submission-time">
@@ -1190,11 +1452,11 @@ function renderSubmissionHistory() {
         </div>
         <span class="submission-status ${s.status}">${statusLabels[s.status]}</span>
       </div>
-    `).join('')}
-  `;
+    `;
+  }).join('');
 }
 
-// ---- 管理员审核功能（供后续阶段使用） ----
+// ---- 管理员审核功能 ----
 function adminReviewSubmission(submissionId, approve, comment) {
   const submissions = demoLoad('demo_submissions', []);
   const idx = submissions.findIndex(s => s.id === submissionId);
@@ -1205,17 +1467,14 @@ function adminReviewSubmission(submissionId, approve, comment) {
   submissions[idx].review_comment = comment || '';
 
   if (approve) {
-    // 奖励积分（每次审核通过 +5 分）
     submissions[idx].points_awarded = 5;
 
-    // 更新用户积分
     const users = demoLoad('demo_users', {});
     const username = submissions[idx].username;
     if (users[username]) {
       users[username].total_points = (users[username].total_points || 0) + 5;
       demoSave('demo_users', users);
 
-      // 如果是当前用户，同步更新
       if (username === currentProfile?.username) {
         currentProfile.total_points += 5;
         updateUserUI(currentProfile);
@@ -1371,10 +1630,8 @@ async function initApp() {
   // 数据榜单
   setupRankings();
 
-  // 跳转 + 截图审核
-  setupJumpButtons();
-  setupUploadArea();
-  setupSubmissionButtons();
+  // 跳转 + 截图打卡
+  setupJumpUpload();
   renderSubmissionHistory();
 
   console.log('✅ 打卡应用已启动' + (DEMO_MODE ? ' [演示模式]' : ''));
