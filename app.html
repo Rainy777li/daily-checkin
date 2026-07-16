@@ -61,72 +61,45 @@
         </div>
       </div>
 
-      <!-- 快捷跳转 + 截图审核 -->
-      <div class="card">
+      <!-- 截图打卡（跳转后上传） -->
+      <div class="card" id="jumpUploadCard" style="display:none;">
         <div class="section-header">
-          <span>🎮 快捷跳转</span>
+          <span>📸 截图打卡</span>
         </div>
-        <div class="jump-grid">
-          <button class="jump-btn" data-app="微信" data-scheme="weixin://">
-            <span class="jump-icon">💬</span>
-            <span class="jump-name">微信</span>
+        <div id="jumpUploadContent">
+          <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:4px;">
+            任务：<strong id="jumpUploadTaskName">-</strong>
+          </p>
+          <p style="font-size:0.75rem;color:var(--text-muted);margin-bottom:12px;">
+            跳转：<span id="jumpUploadTarget">-</span>
+            <span style="font-size:0.7rem;color:var(--primary);">
+              💡 在目标页面完成操作后截图，回到本页上传
+            </span>
+          </p>
+          <div class="upload-area" id="jumpUploadArea" style="position:relative;overflow:hidden;">
+            <span style="font-size:2rem;">📷</span>
+            <span style="font-size:0.85rem;color:var(--text-secondary);">点击上传截图</span>
+            <input type="file" id="jumpScreenshotFile" accept="image/*"
+                   style="position:absolute;inset:0;opacity:0;font-size:0;cursor:pointer;">
+          </div>
+          <img id="jumpScreenshotPreview" style="display:none;width:100%;border-radius:8px;margin-bottom:8px;max-height:200px;object-fit:contain;">
+          <button class="btn btn-block btn-sm mt-1" id="jumpBtnSubmit"
+                  disabled onclick="submitJumpScreenshot()"
+                  style="background:#E0DDD8;color:#A09990;cursor:not-allowed;pointer-events:auto;">
+            🔒 请先上传截图
           </button>
-          <button class="jump-btn" data-app="抖音" data-scheme="snssdk1128://">
-            <span class="jump-icon">🎵</span>
-            <span class="jump-name">抖音</span>
-          </button>
-          <button class="jump-btn" data-app="备忘录" data-scheme="x-apple-mobilenotes://">
-            <span class="jump-icon">📝</span>
-            <span class="jump-name">备忘录</span>
-          </button>
-          <button class="jump-btn" data-app="网易云" data-scheme="orpheus://">
-            <span class="jump-icon">🎧</span>
-            <span class="jump-name">网易云</span>
-          </button>
-          <button class="jump-btn" data-app="Keep" data-scheme="keep://">
-            <span class="jump-icon">💪</span>
-            <span class="jump-name">Keep</span>
-          </button>
-          <button class="jump-btn" data-app="QQ" data-scheme="mqq://">
-            <span class="jump-icon">🐧</span>
-            <span class="jump-name">QQ</span>
+          <button class="btn btn-outline btn-block btn-sm mt-1" id="jumpBtnCancel">
+            取消
           </button>
         </div>
-        <p style="font-size:0.7rem;color:var(--text-muted);text-align:center;margin-top:6px;">
-          💡 点击跳转到对应 App，完成后返回本页提交截图赚积分
-        </p>
+      </div>
 
-        <!-- 截图提交 -->
-        <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
-          <div class="section-header" style="margin-bottom: 8px;">
-            <span>📸 提交截图赚积分</span>
-          </div>
-          <div id="submissionForm" style="display:none;">
-            <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:8px;">
-              正在提交：<strong id="submissionAppName">-</strong>
-            </p>
-            <div class="upload-area" id="uploadArea">
-              <span style="font-size:2rem;">📷</span>
-              <span style="font-size:0.85rem;color:var(--text-secondary);">点击上传截图</span>
-              <input type="file" id="screenshotFile" accept="image/*" style="display:none;">
-            </div>
-            <img id="screenshotPreview" style="display:none;width:100%;border-radius:8px;margin-bottom:8px;max-height:200px;object-fit:contain;">
-            <button class="btn btn-primary btn-block btn-sm" id="btnSubmitScreenshot">
-              ✅ 提交审核
-            </button>
-            <button class="btn btn-outline btn-block btn-sm mt-1" id="btnCancelSubmission">
-              取消
-            </button>
-          </div>
-          <div id="noSubmissionYet" style="text-align:center;padding:12px;">
-            <p style="font-size:0.85rem;color:var(--text-muted);">
-              👆 先点击上方 App 图标跳转，完成后回来这里提交截图
-            </p>
-          </div>
+      <!-- 截图审核记录 -->
+      <div class="card" id="submissionHistoryCard" style="display:none;">
+        <div class="section-header">
+          <span>📝 截图提交记录</span>
         </div>
-
-        <!-- 审核记录 -->
-        <div id="submissionHistory" style="margin-top: 12px;"></div>
+        <div id="submissionHistory"></div>
       </div>
     </div>
   </div>
