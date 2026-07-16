@@ -1,0 +1,3 @@
+# Supabase 密钥文件（如果单独存放的话）
+.env
+.env.local
