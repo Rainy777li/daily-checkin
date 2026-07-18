@@ -1151,7 +1151,7 @@ function refreshRankings() {
 
 // 跳转目标配置（后续可通过管理员后台配置）
 const JUMP_TARGETS = [
-  { id: 'xunyee', name: '李煜东寻艺', url: 'https://www.xunyee.cn/person/share?person=198342', icon: '👍' },
+  { id: 'xunyee', name: '李煜东寻艺', url: 'https://www.xunyee.cn/', icon: '👍' },
 ];
 
 // 跳转流程状态
