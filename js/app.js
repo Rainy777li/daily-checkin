@@ -1015,24 +1015,10 @@ function setupRankings() {
     });
   });
 
-  // 刷新按钮
-  document.getElementById('btnRefreshRanking')?.addEventListener('click', async () => {
-    if (currentRankingCatId === 0) {
-      showToast('正在刷新寻艺数据...', 'info');
-      await loadXunyeeData();
-    } else {
-      rankingData = generateDemoRankingItems();
-    }
-    document.getElementById('rankingUpdateTime').textContent =
-      `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
-    if (currentRankingCatId !== undefined) renderRankingList(currentRankingCatId);
-    showToast('榜单已刷新', 'info');
-  });
+  // 刷新按钮已移除——数据由 GitHub Actions 每2小时自动抓取
 
   // 初始化数据：先加载 demo 数据，再异步加载寻艺真实数据
   rankingData = generateDemoRankingItems();
-  document.getElementById('rankingUpdateTime').textContent =
-    `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
 
   // 异步加载寻艺数据
   loadXunyeeData().then(() => {
