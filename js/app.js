@@ -950,6 +950,8 @@ function generateDemoRankingItems() {
   // 优先使用管理员录入的榜单数据
   const result = {};
   DEMO_RANKING_CATEGORIES.forEach(cat => {
+    // 寻艺数据由 loadXunyeeData() 异步加载，跳过
+    if (cat.realtime) { result[cat.id] = []; return; }
     const adminItems = demoLoad(`demo_rank_items_${cat.id}`, null);
     if (adminItems && adminItems.length > 0) {
       // 使用管理员录入的真实数据
@@ -1532,6 +1534,8 @@ navItems.forEach(item => {
     document.getElementById(item.dataset.page).classList.add('active');
     pageTitle.textContent = pageTitles[item.dataset.page] || '每日打卡';
     window.scrollTo({ top: 0, behavior: 'smooth' });
+    // 记住当前页面，刷新后保持
+    localStorage.setItem('active_page', item.dataset.page);
 
     // 切换到"我的"页面时刷新数据
     if (item.dataset.page === 'pagePoints') {
@@ -1664,6 +1668,20 @@ async function initApp() {
   // 跳转 + 截图打卡
   setupJumpUpload();
   renderSubmissionHistory();
+
+  // 恢复到上次打开的页面
+  const savedPage = localStorage.getItem('active_page');
+  if (savedPage) {
+    const targetPage = savedPage;
+    const targetNav = document.querySelector(`.nav-item[data-page="${targetPage}"]`);
+    if (targetNav) {
+      navItems.forEach(n => n.classList.remove('active'));
+      targetNav.classList.add('active');
+      pages.forEach(p => p.classList.remove('active'));
+      document.getElementById(targetPage).classList.add('active');
+      pageTitle.textContent = pageTitles[targetPage] || '每日打卡';
+    }
+  }
 
   console.log('✅ 打卡应用已启动' + (DEMO_MODE ? ' [演示模式]' : ''));
 }
