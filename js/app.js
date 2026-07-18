@@ -934,8 +934,12 @@ function renderRankList(ranked) {
 // ============================================
 // 数据榜单
 // ============================================
+// 寻艺真实数据缓存
+let xunyeeRankData = null;
+
 // 演示榜单数据（模拟公开网页数据）
 const DEMO_RANKING_CATEGORIES = [
+  { id: 0, name: '寻艺点赞', icon: '👍', sort_order: 0, realtime: true },
   { id: 1, name: '微博粉丝榜', icon: '📊', sort_order: 1 },
   { id: 2, name: '抖音播放榜', icon: '🎵', sort_order: 2 },
   { id: 3, name: '超话活跃榜', icon: '🔥', sort_order: 3 },
@@ -998,7 +1002,7 @@ function setupRankings() {
   // 渲染分类 Tab
   const catContainer = document.getElementById('rankingCategories');
   catContainer.innerHTML = DEMO_RANKING_CATEGORIES.map(cat =>
-    `<button class="ranking-cat-btn" data-cat-id="${cat.id}">${cat.icon} ${cat.name}</button>`
+    `<button class="ranking-cat-btn" data-cat-id="${cat.id}">${cat.icon} ${cat.name}${cat.realtime ? ' 🔴' : ''}</button>`
   ).join('');
 
   // 绑定分类切换
@@ -1012,25 +1016,66 @@ function setupRankings() {
   });
 
   // 刷新按钮
-  document.getElementById('btnRefreshRanking')?.addEventListener('click', () => {
-    rankingData = generateDemoRankingItems();
+  document.getElementById('btnRefreshRanking')?.addEventListener('click', async () => {
+    if (currentRankingCatId === 0) {
+      showToast('正在刷新寻艺数据...', 'info');
+      await loadXunyeeData();
+    } else {
+      rankingData = generateDemoRankingItems();
+    }
     document.getElementById('rankingUpdateTime').textContent =
       `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
-    if (currentRankingCatId) renderRankingList(currentRankingCatId);
+    if (currentRankingCatId !== undefined) renderRankingList(currentRankingCatId);
     showToast('榜单已刷新', 'info');
   });
 
-  // 初始化数据
+  // 初始化数据：先加载 demo 数据，再异步加载寻艺真实数据
   rankingData = generateDemoRankingItems();
   document.getElementById('rankingUpdateTime').textContent =
     `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
 
-  // 默认选中第一个分类
+  // 异步加载寻艺数据
+  loadXunyeeData().then(() => {
+    if (currentRankingCatId === 0) renderRankingList(0);
+  });
+
+  // 默认选中寻艺点赞
   const firstBtn = catContainer.querySelector('.ranking-cat-btn');
   if (firstBtn) {
     firstBtn.classList.add('active');
     currentRankingCatId = parseInt(firstBtn.dataset.catId);
     renderRankingList(currentRankingCatId);
+  }
+}
+
+async function loadXunyeeData() {
+  try {
+    const resp = await fetch('data/rankings.json');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    xunyeeRankData = await resp.json();
+    const cat = xunyeeRankData.categories?.xunyee_check;
+    if (cat && cat.items) {
+      rankingData[0] = cat.items.map((item, i) => ({
+        rank: i + 1,
+        ...item,
+      }));
+      // 缓存到 localStorage
+      demoSave('xunyee_cache', {
+        updated_at: xunyeeRankData.updated_at,
+        items: cat.items,
+      });
+      document.getElementById('rankingUpdateTime').textContent =
+        `寻艺更新于 ${xunyeeRankData.updated_at?.replace('T', ' ').slice(0, 16) || '?'}`;
+      console.log('✅ 寻艺数据已加载:', rankingData[0].length, '人');
+    }
+  } catch (err) {
+    console.warn('⚠️ 寻艺数据加载失败，使用缓存:', err.message);
+    const cached = demoLoad('xunyee_cache', null);
+    if (cached && cached.items) {
+      rankingData[0] = cached.items.map((item, i) => ({ rank: i + 1, ...item }));
+      document.getElementById('rankingUpdateTime').textContent =
+        `寻艺缓存 ${cached.updated_at?.replace('T', ' ').slice(0, 16) || '?'}`;
+    }
   }
 }
 
@@ -1106,7 +1151,7 @@ function refreshRankings() {
 
 // 跳转目标配置（后续可通过管理员后台配置）
 const JUMP_TARGETS = [
-  { id: 'xunyee', name: '寻艺点赞', url: 'https://www.xunyee.cn/', icon: '👍' },
+  { id: 'xunyee', name: '李煜东寻艺', url: 'https://www.xunyee.cn/person/share?person=198342', icon: '👍' },
 ];
 
 // 跳转流程状态
