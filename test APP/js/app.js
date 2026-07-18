@@ -1,0 +1,1413 @@
+/* ============================================
+   主应用逻辑 — 打卡 / 日历 / 导航
+   支持 Supabase 模式 + 离线演示模式
+   ============================================ */
+
+// ---- 演示模式检测 ----
+let DEMO_MODE = typeof SUPABASE_CONFIGURED !== 'undefined' && !SUPABASE_CONFIGURED;
+
+// 监听 SDK 加载失败降级
+window.addEventListener('supabase-ready', () => {
+  if (window.SUPABASE_CONFIGURED_FALLBACK === false) {
+    DEMO_MODE = true;
+    console.warn('⚠️ 降级为演示模式');
+    initApp();
+  }
+});
+
+// ---- 演示数据 ----
+const DEMO_TASKS = [
+  { id: 1, name: '运动 30 分钟', icon: '🏃', points: 10, sort_order: 1, is_active: true },
+  { id: 2, name: '阅读 20 分钟', icon: '📖', points: 10, sort_order: 2, is_active: true },
+  { id: 3, name: '喝 8 杯水',     icon: '💧', points: 10, sort_order: 3, is_active: true },
+  { id: 4, name: '早睡 23:00',    icon: '😴', points: 15, sort_order: 4, is_active: true },
+  { id: 5, name: '健康饮食',      icon: '🍎', points: 10, sort_order: 5, is_active: true },
+  { id: 6, name: '冥想 10 分钟',  icon: '🧘', points: 10, sort_order: 6, is_active: true },
+  { id: 7, name: '写日记',        icon: '📝', points: 10, sort_order: 7, is_active: true },
+  { id: 8, name: '学习 1 小时',   icon: '🎯', points: 20, sort_order: 8, is_active: true },
+];
+
+function demoLoad(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; }
+  catch { return fallback; }
+}
+
+function demoSave(key, val) {
+  localStorage.setItem(key, JSON.stringify(val));
+}
+
+// ---- 全局状态 ----
+let currentUser = null;
+let currentProfile = null;
+let calYear, calMonth;
+let todayCheckins = [];
+let monthCheckinDates = new Set();
+
+// ---- 页面标题映射 ----
+const pageTitles = {
+  pageCheckin:    '📋 每日打卡',
+  pageRankings:   '📊 数据榜单',
+  pageLeaderboard:'🏆 积分排行',
+  pagePoints:     '👤 我的',
+};
+
+function todayStr() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// ============================================
+// 会话管理
+// ============================================
+async function checkSession() {
+  if (DEMO_MODE) {
+    const session = JSON.parse(localStorage.getItem('demo_session') || 'null');
+    if (!session) { window.location.href = 'index.html'; return null; }
+    currentUser = { id: session.username, email: session.username };
+    const users = demoLoad('demo_users', {});
+    const u = users[session.username];
+    const checkins = demoLoad('demo_checkins', {});
+    const userCheckins = Object.values(checkins).filter(c => c.user_id === session.username);
+
+    currentProfile = {
+      id: session.username,
+      username: session.username,
+      total_points: userCheckins.reduce((s, c) => s + c.points_earned, 0),
+      streak: 0,
+      is_admin: u?.is_admin || false,
+      is_banned: u?.is_banned || false,
+    };
+    // 计算 streak
+    currentProfile.streak = calcStreakFromCheckins(checkins);
+    demoSave('demo_profile', currentProfile);
+
+    updateUserUI(currentProfile);
+    if (currentProfile.is_admin) addAdminEntry(currentProfile);
+    return currentProfile;
+  }
+
+  // Supabase 模式
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) { window.location.href = 'index.html'; return null; }
+  currentUser = session.user;
+
+  const { data: profile, error } = await supabase
+    .from('profiles').select('*').eq('id', currentUser.id).single();
+
+  if (error || !profile) { console.error('加载用户信息失败:', error); return null; }
+  if (profile.is_banned) {
+    await supabase.auth.signOut();
+    alert('账号已被禁用');
+    window.location.href = 'index.html';
+    return null;
+  }
+
+  currentProfile = profile;
+  updateUserUI(profile);
+  if (profile.is_admin) addAdminEntry(profile);
+  return profile;
+}
+
+function calcStreakFromCheckins(checkins) {
+  let streak = 0;
+  const d = new Date();
+  while (streak < 365) {
+    const ds = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+    const hasCheckin = Object.values(checkins).some(c => c.user_id === currentProfile?.username && c.checkin_date === ds);
+    if (hasCheckin) { streak++; d.setDate(d.getDate() - 1); }
+    else break;
+  }
+  return streak;
+}
+
+function updateUserUI(profile) {
+  document.getElementById('displayName').textContent = profile.username;
+  document.getElementById('streakCount').textContent = profile.streak || 0;
+  document.getElementById('totalPoints').textContent = profile.total_points || 0;
+}
+
+// ============================================
+// 日历
+// ============================================
+async function loadCalendarData(year, month) {
+  const firstDay = `${year}-${String(month).padStart(2, '0')}-01`;
+  const lastDate = new Date(year, month, 0).getDate();
+  const lastDay = `${year}-${String(month).padStart(2, '0')}-${String(lastDate).padStart(2, '0')}`;
+
+  monthCheckinDates = new Set();
+
+  if (DEMO_MODE) {
+    const checkins = demoLoad('demo_checkins', {});
+    Object.values(checkins).forEach(c => {
+      if (c.user_id === currentProfile.username && c.checkin_date >= firstDay && c.checkin_date <= lastDay) {
+        monthCheckinDates.add(c.checkin_date);
+      }
+    });
+    return;
+  }
+
+  const { data } = await supabase
+    .from('checkins').select('checkin_date')
+    .eq('user_id', currentUser.id)
+    .gte('checkin_date', firstDay).lte('checkin_date', lastDay);
+
+  if (data) data.forEach(row => monthCheckinDates.add(row.checkin_date));
+}
+
+function renderCalendar(year, month) {
+  calYear = year; calMonth = month;
+  document.getElementById('calTitle').textContent = `${year}年${month}月`;
+
+  const grid = document.getElementById('calGrid');
+  grid.innerHTML = '';
+
+  const today = new Date();
+  const todayY = today.getFullYear(), todayM = today.getMonth() + 1, todayD = today.getDate();
+
+  const firstDayOfWeek = (new Date(year, month - 1, 1).getDay() + 6) % 7;
+  const daysInMonth = new Date(year, month, 0).getDate();
+  const daysInPrevMonth = new Date(year, month - 1, 0).getDate();
+  const totalCells = Math.ceil((firstDayOfWeek + daysInMonth) / 7) * 7;
+
+  for (let i = 0; i < totalCells; i++) {
+    const cell = document.createElement('div');
+    cell.className = 'calendar-cell';
+
+    let dayNum, dateStr, isOtherMonth = false;
+
+    if (i < firstDayOfWeek) {
+      dayNum = daysInPrevMonth - firstDayOfWeek + i + 1;
+      const m = month === 1 ? 12 : month - 1;
+      const y = month === 1 ? year - 1 : year;
+      dateStr = `${y}-${String(m).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+      isOtherMonth = true;
+    } else if (i >= firstDayOfWeek + daysInMonth) {
+      dayNum = i - firstDayOfWeek - daysInMonth + 1;
+      const m = month === 12 ? 1 : month + 1;
+      const y = month === 12 ? year + 1 : year;
+      dateStr = `${y}-${String(m).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+      isOtherMonth = true;
+    } else {
+      dayNum = i - firstDayOfWeek + 1;
+      dateStr = `${year}-${String(month).padStart(2, '0')}-${String(dayNum).padStart(2, '0')}`;
+    }
+
+    cell.textContent = dayNum;
+    if (isOtherMonth) cell.classList.add('other-month');
+
+    if (year === todayY && month === todayM && dayNum === todayD && !isOtherMonth) {
+      cell.classList.add('today');
+    }
+
+    if (monthCheckinDates.has(dateStr)) {
+      cell.classList.add('checked');
+      if (cell.classList.contains('today')) {
+        const dot = document.createElement('span');
+        dot.className = 'dot';
+        cell.appendChild(dot);
+      }
+    }
+
+    grid.appendChild(cell);
+  }
+}
+
+async function refreshCalendar() {
+  await loadCalendarData(calYear, calMonth);
+  renderCalendar(calYear, calMonth);
+}
+
+async function changeMonth(delta) {
+  let m = calMonth + delta, y = calYear;
+  if (m > 12) { m = 1; y++; }
+  if (m < 1)  { m = 12; y--; }
+  calYear = y; calMonth = m;
+  await loadCalendarData(y, m);
+  renderCalendar(y, m);
+}
+
+// ============================================
+// 任务列表 + 打卡
+// ============================================
+async function loadTasks() {
+  if (DEMO_MODE) {
+    // 从管理员管理的任务数据加载
+    const adminTasks = demoLoad('demo_tasks', null);
+    if (adminTasks) return adminTasks.filter(t => t.is_active).sort((a, b) => a.sort_order - b.sort_order);
+    // 回退到默认任务
+    return DEMO_TASKS;
+  }
+
+  const { data, error } = await supabase
+    .from('tasks').select('*').eq('is_active', true).order('sort_order');
+  return error ? [] : data;
+}
+
+async function loadTodayCheckins() {
+  todayCheckins = [];
+
+  if (DEMO_MODE) {
+    const checkins = demoLoad('demo_checkins', {});
+    Object.values(checkins).forEach(c => {
+      if (c.user_id === currentProfile.username && c.checkin_date === todayStr()) {
+        todayCheckins.push(c.task_id);
+      }
+    });
+    return todayCheckins;
+  }
+
+  const { data } = await supabase
+    .from('checkins').select('task_id, points_earned')
+    .eq('user_id', currentUser.id).eq('checkin_date', todayStr());
+
+  if (data) todayCheckins = data.map(row => row.task_id);
+  return todayCheckins;
+}
+
+function renderTasks(tasks) {
+  const container = document.getElementById('taskList');
+  if (!tasks || tasks.length === 0) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><p class="empty-text">暂未发布任务</p></div>`;
+    return;
+  }
+
+  const completedCount = tasks.filter(t => todayCheckins.includes(t.id)).length;
+  const totalCount = tasks.length;
+
+  container.innerHTML = `
+    <div class="progress-bar mb-2">
+      <div class="progress-fill" style="width: ${totalCount ? (completedCount / totalCount) * 100 : 0}%"></div>
+    </div>
+    <p style="font-size:0.75rem;color:var(--text-secondary);text-align:center;margin-bottom:8px;">
+      已完成 ${completedCount}/${totalCount}
+    </p>
+    ${tasks.map(task => {
+      const isCompleted = todayCheckins.includes(task.id);
+      return `
+        <div class="task-card ${isCompleted ? 'completed' : ''}"
+             data-task-id="${task.id}" data-task-points="${task.points}">
+          <span class="task-icon">${task.icon}</span>
+          <div class="task-info">
+            <div class="task-name">${task.name}</div>
+            <div class="task-points">+${task.points} 积分</div>
+          </div>
+          <div class="task-check">${isCompleted ? '✅' : ''}</div>
+        </div>`;
+    }).join('')}
+  `;
+
+  container.querySelectorAll('.task-card').forEach(card => {
+    card.addEventListener('click', () => {
+      const taskId = parseInt(card.dataset.taskId);
+      const taskPoints = parseInt(card.dataset.taskPoints);
+      toggleCheckin(taskId, taskPoints, card);
+    });
+  });
+}
+
+async function toggleCheckin(taskId, taskPoints, cardEl) {
+  const isCompleted = todayCheckins.includes(taskId);
+
+  if (isCompleted) {
+    // 取消打卡
+    if (DEMO_MODE) {
+      const checkins = demoLoad('demo_checkins', {});
+      // 找到并删除
+      const newCheckins = {};
+      for (const [k, v] of Object.entries(checkins)) {
+        if (!(v.user_id === currentProfile.username && v.task_id === taskId && v.checkin_date === todayStr())) {
+          newCheckins[k] = v;
+        }
+      }
+      demoSave('demo_checkins', newCheckins);
+    } else {
+      const { error } = await supabase
+        .from('checkins').delete()
+        .eq('user_id', currentUser.id).eq('task_id', taskId).eq('checkin_date', todayStr());
+      if (error) { showToast('取消失败，请重试', 'error'); return; }
+    }
+
+    currentProfile.total_points -= taskPoints;
+    todayCheckins = todayCheckins.filter(id => id !== taskId);
+    cardEl.classList.remove('completed');
+    cardEl.querySelector('.task-check').textContent = '';
+    showToast('已取消打卡', 'info');
+
+    if (!DEMO_MODE) {
+      await supabase.from('profiles').update({ total_points: currentProfile.total_points }).eq('id', currentUser.id);
+    }
+  } else {
+    // 打卡
+    if (DEMO_MODE) {
+      const checkins = demoLoad('demo_checkins', {});
+      const key = `${currentProfile.username}_${todayStr()}_${taskId}`;
+      checkins[key] = {
+        user_id: currentProfile.username,
+        task_id: taskId,
+        checkin_date: todayStr(),
+        points_earned: taskPoints,
+      };
+      demoSave('demo_checkins', checkins);
+    } else {
+      const { error } = await supabase
+        .from('checkins').insert({
+          user_id: currentUser.id, task_id: taskId,
+          checkin_date: todayStr(), points_earned: taskPoints
+        });
+      if (error) { showToast('打卡失败，请重试', 'error'); return; }
+    }
+
+    currentProfile.total_points += taskPoints;
+    todayCheckins.push(taskId);
+    cardEl.classList.add('completed');
+    cardEl.querySelector('.task-check').textContent = '✅';
+    showToast(`+${taskPoints} 积分！`, 'success');
+
+    if (!DEMO_MODE) {
+      await supabase.from('profiles').update({ total_points: currentProfile.total_points }).eq('id', currentUser.id);
+    }
+  }
+
+  updateUserUI(currentProfile);
+  await updateStreak();
+  await refreshCalendar();
+  renderTasks(await loadTasks());
+  // 同步刷新"我的"页面
+  refreshMyPage();
+}
+
+// ============================================
+// 连续打卡计算
+// ============================================
+async function updateStreak() {
+  let streak;
+
+  if (DEMO_MODE) {
+    const checkins = demoLoad('demo_checkins', {});
+    streak = calcStreakFromCheckins(checkins);
+  } else {
+    streak = 0;
+    const checkDate = new Date();
+    while (streak < 365) {
+      const ds = `${checkDate.getFullYear()}-${String(checkDate.getMonth()+1).padStart(2,'0')}-${String(checkDate.getDate()).padStart(2,'0')}`;
+      const { data } = await supabase.from('checkins').select('id')
+        .eq('user_id', currentUser.id).eq('checkin_date', ds).limit(1);
+      if (data && data.length > 0) { streak++; checkDate.setDate(checkDate.getDate() - 1); }
+      else break;
+    }
+    if (streak !== currentProfile.streak) {
+      await supabase.from('profiles').update({ streak }).eq('id', currentUser.id);
+    }
+  }
+
+  currentProfile.streak = streak;
+  document.getElementById('streakCount').textContent = streak;
+
+  if (DEMO_MODE) {
+    const users = demoLoad('demo_users', {});
+    if (users[currentProfile.username]) {
+      users[currentProfile.username].streak = streak;
+      users[currentProfile.username].total_points = currentProfile.total_points;
+      demoSave('demo_users', users);
+    }
+  }
+}
+
+// ============================================
+// 「我的」页面 — 积分 + 账户 + 客服
+// ============================================
+function refreshMyPage() {
+  if (!currentProfile) return;
+
+  // 积分概览
+  document.getElementById('myTotalPoints').textContent = currentProfile.total_points || 0;
+  document.getElementById('myStreak').textContent = currentProfile.streak || 0;
+  document.getElementById('myTodayCount').textContent = todayCheckins.length;
+
+  // 本周积分
+  const weekPoints = calcWeekPoints();
+  document.getElementById('myWeekPoints').textContent = weekPoints;
+
+  // 积分明细
+  loadPointsHistory();
+}
+
+function calcWeekPoints() {
+  const now = new Date();
+  const dayOfWeek = now.getDay();
+  const mondayOffset = dayOfWeek === 0 ? 6 : dayOfWeek - 1; // 周一=0
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - mondayOffset);
+  monday.setHours(0, 0, 0, 0);
+
+  let total = 0;
+  if (DEMO_MODE) {
+    const checkins = demoLoad('demo_checkins', {});
+    Object.values(checkins).forEach(c => {
+      if (c.user_id === currentProfile.username && new Date(c.checkin_date) >= monday) {
+        total += c.points_earned || 0;
+      }
+    });
+  } else {
+    // Supabase 模式下在前端遍历 todayCheckins 和已有的积分明细
+    // 这里简化处理：从 DOM 已加载的积分明细中计算
+    total = currentProfile.total_points; // 简化版，后续可优化为精确周统计
+  }
+  return total;
+}
+
+function loadPointsHistory() {
+  const container = document.getElementById('pointsHistory');
+  // 默认显示最近 7 天
+  const rangeStart = new Date();
+  rangeStart.setDate(rangeStart.getDate() - 6);
+  const startStr = `${rangeStart.getMonth() + 1}/${rangeStart.getDate()}`;
+  const endStr = `${new Date().getMonth() + 1}/${new Date().getDate()}`;
+  document.getElementById('pointsRange').textContent = `${startStr} - ${endStr}`;
+
+  if (DEMO_MODE) {
+    const checkins = demoLoad('demo_checkins', {});
+    const userCheckins = Object.values(checkins)
+      .filter(c => c.user_id === currentProfile.username)
+      .sort((a, b) => b.checkin_date.localeCompare(a.checkin_date))
+      .slice(0, 20);
+
+    if (userCheckins.length === 0) {
+      container.innerHTML = `<p style="text-align:center;color:var(--text-muted);padding:12px;">暂无积分记录，快去打卡吧！</p>`;
+      return;
+    }
+
+    // 聚合每天的数据
+    const grouped = {};
+    userCheckins.forEach(c => {
+      if (!grouped[c.checkin_date]) grouped[c.checkin_date] = { total: 0, tasks: [] };
+      grouped[c.checkin_date].total += c.points_earned || 0;
+      const task = DEMO_TASKS.find(t => t.id === c.task_id);
+      grouped[c.checkin_date].tasks.push(task ? task.name : '未知任务');
+    });
+
+    container.innerHTML = Object.entries(grouped).slice(0, 15).map(([date, info]) => `
+      <div class="points-item">
+        <span class="points-item-icon">📅</span>
+        <div class="points-item-info">
+          <div class="points-item-title">${info.tasks.slice(0, 2).join('、')}${info.tasks.length > 2 ? '等' + info.tasks.length + '项' : ''}</div>
+          <div class="points-item-date">${date}</div>
+        </div>
+        <span class="points-item-value" style="color:var(--success);">+${info.total}</span>
+      </div>
+    `).join('');
+
+    return;
+  }
+
+  // Supabase 模式：异步加载
+  loadPointsHistorySupabase();
+}
+
+async function loadPointsHistorySupabase() {
+  const container = document.getElementById('pointsHistory');
+  const sevenDaysAgo = new Date();
+  sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 6);
+  const startDate = sevenDaysAgo.toISOString().split('T')[0];
+
+  const { data, error } = await supabase
+    .from('checkins')
+    .select('task_id, checkin_date, points_earned')
+    .eq('user_id', currentUser.id)
+    .gte('checkin_date', startDate)
+    .order('checkin_date', { ascending: false })
+    .limit(50);
+
+  if (error || !data || data.length === 0) {
+    container.innerHTML = `<p style="text-align:center;color:var(--text-muted);padding:12px;">暂无积分记录，快去打卡吧！</p>`;
+    return;
+  }
+
+  // 获取任务名称映射
+  const { data: tasks } = await supabase.from('tasks').select('id, name');
+  const taskMap = {};
+  if (tasks) tasks.forEach(t => { taskMap[t.id] = t.name; });
+
+  const grouped = {};
+  data.forEach(c => {
+    if (!grouped[c.checkin_date]) grouped[c.checkin_date] = { total: 0, tasks: [] };
+    grouped[c.checkin_date].total += c.points_earned || 0;
+    grouped[c.checkin_date].tasks.push(taskMap[c.task_id] || '未知');
+  });
+
+  container.innerHTML = Object.entries(grouped).slice(0, 15).map(([date, info]) => `
+    <div class="points-item">
+      <span class="points-item-icon">📅</span>
+      <div class="points-item-info">
+        <div class="points-item-title">${info.tasks.slice(0, 2).join('、')}${info.tasks.length > 2 ? '等' + info.tasks.length + '项' : ''}</div>
+        <div class="points-item-date">${date}</div>
+      </div>
+      <span class="points-item-value" style="color:var(--success);">+${info.total}</span>
+    </div>
+  `).join('');
+}
+
+// ---- 修改密码弹窗 ----
+function showChangePasswordModal() {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <div class="modal-box">
+      <div class="modal-title">🔑 修改密码</div>
+      <form id="formChangePwd" autocomplete="off">
+        <div class="form-group">
+          <label class="form-label">当前密码</label>
+          <input class="form-input" type="password" id="oldPwd" placeholder="输入当前密码" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">新密码</label>
+          <input class="form-input" type="password" id="newPwd" placeholder="至少 6 位" minlength="6" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">确认新密码</label>
+          <input class="form-input" type="password" id="newPwd2" placeholder="再次输入新密码" minlength="6" required>
+        </div>
+        <p class="form-error" id="pwdError"></p>
+        <div class="modal-actions">
+          <button class="btn btn-outline btn-block btn-sm" type="button" id="btnCancelPwd">取消</button>
+          <button class="btn btn-primary btn-block btn-sm" type="submit">确认修改</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.remove();
+  });
+
+  document.getElementById('btnCancelPwd').addEventListener('click', () => overlay.remove());
+
+  document.getElementById('formChangePwd').addEventListener('submit', (e) => {
+    e.preventDefault();
+    const oldPwd = document.getElementById('oldPwd').value;
+    const newPwd = document.getElementById('newPwd').value;
+    const newPwd2 = document.getElementById('newPwd2').value;
+    const errEl = document.getElementById('pwdError');
+
+    if (newPwd.length < 6) {
+      errEl.textContent = '新密码至少 6 位';
+      errEl.classList.add('visible');
+      return;
+    }
+    if (newPwd !== newPwd2) {
+      errEl.textContent = '两次输入的新密码不一致';
+      errEl.classList.add('visible');
+      return;
+    }
+
+    if (DEMO_MODE) {
+      const users = demoLoad('demo_users', {});
+      const user = users[currentProfile.username];
+      if (!user || user.password !== oldPwd) {
+        errEl.textContent = '当前密码错误';
+        errEl.classList.add('visible');
+        return;
+      }
+      user.password = newPwd;
+      demoSave('demo_users', users);
+      overlay.remove();
+      showToast('密码修改成功！', 'success');
+      return;
+    }
+
+    // Supabase 模式：重新登录验证旧密码，然后更新
+    supabase.auth.signInWithPassword({
+      email: currentUser.email,
+      password: oldPwd
+    }).then(({ error }) => {
+      if (error) {
+        errEl.textContent = '当前密码错误';
+        errEl.classList.add('visible');
+        return;
+      }
+      return supabase.auth.updateUser({ password: newPwd });
+    }).then(({ error } = {}) => {
+      if (error) {
+        errEl.textContent = error.message || '修改失败';
+        errEl.classList.add('visible');
+      } else {
+        overlay.remove();
+        showToast('密码修改成功！', 'success');
+      }
+    });
+  });
+}
+
+// ---- 联系客服 ----
+function setupFeedback() {
+  const form = document.getElementById('formFeedback');
+  if (!form) return;
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const msg = document.getElementById('feedbackMsg').value.trim();
+    if (!msg) {
+      showToast('请输入反馈内容', 'error');
+      return;
+    }
+
+    const feedbacks = demoLoad('demo_feedbacks', []);
+    feedbacks.unshift({
+      username: currentProfile.username,
+      message: msg,
+      time: new Date().toISOString(),
+      reply: null // 管理员可在后台回复
+    });
+    demoSave('demo_feedbacks', feedbacks);
+    document.getElementById('feedbackMsg').value = '';
+    showToast('感谢反馈！我们会尽快处理', 'success');
+    renderFeedbackHistory();
+  });
+}
+
+function renderFeedbackHistory() {
+  const container = document.getElementById('feedbackHistory');
+  if (!container) return;
+
+  const feedbacks = demoLoad('demo_feedbacks', []);
+  const mine = feedbacks.filter(f => f.username === currentProfile.username).slice(0, 5);
+
+  if (mine.length === 0) return;
+
+  container.innerHTML = `
+    <p style="font-size:0.8rem;color:var(--text-muted);margin-bottom:8px;">📝 我的反馈记录</p>
+    ${mine.map(f => `
+      <div class="feedback-item">
+        <div class="feedback-text">${escapeHtml(f.message)}</div>
+        <div class="feedback-time">${new Date(f.time).toLocaleString('zh-CN')}</div>
+        ${f.reply ? `<div class="feedback-reply">💬 客服回复：${escapeHtml(f.reply)}</div>` : ''}
+      </div>
+    `).join('')}
+  `;
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ============================================
+// 积分排行榜
+// ============================================
+let currentRankType = 'total'; // 'total' | 'week'
+
+function refreshLeaderboard() {
+  currentRankType = 'total';
+  document.querySelectorAll('.rank-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector('[data-rank="total"]')?.classList.add('active');
+  loadLeaderboard('total');
+}
+
+function setupRankTabs() {
+  document.querySelectorAll('.rank-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.rank-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      currentRankType = tab.dataset.rank;
+      loadLeaderboard(currentRankType);
+    });
+  });
+}
+
+function getWeekMonday() {
+  const now = new Date();
+  const day = now.getDay();
+  const offset = day === 0 ? 6 : day - 1; // 周一=0
+  const monday = new Date(now);
+  monday.setDate(now.getDate() - offset);
+  monday.setHours(0, 0, 0, 0);
+  return monday;
+}
+
+function loadLeaderboard(type) {
+  const monday = getWeekMonday();
+
+  if (DEMO_MODE) {
+    const users = demoLoad('demo_users', {});
+    const checkins = demoLoad('demo_checkins', {});
+
+    // 计算每个用户的积分
+    const userPoints = {};
+    Object.keys(users).forEach(username => {
+      let points = 0;
+      Object.values(checkins).forEach(c => {
+        if (c.user_id === username) {
+          const isInWeek = type === 'week' ? new Date(c.checkin_date) >= monday : true;
+          if (isInWeek) points += c.points_earned || 0;
+        }
+      });
+      userPoints[username] = {
+        username,
+        points,
+        streak: users[username].streak || 0,
+        is_banned: users[username].is_banned || false,
+      };
+    });
+
+    // 排序
+    const ranked = Object.values(userPoints)
+      .filter(u => !u.is_banned)
+      .sort((a, b) => b.points - a.points);
+
+    renderRankList(ranked);
+    return;
+  }
+
+  // Supabase 模式：加载所有用户
+  loadLeaderboardSupabase(type, monday);
+}
+
+async function loadLeaderboardSupabase(type, monday) {
+  // 获取所有非封禁用户
+  const { data: profiles } = await supabase
+    .from('profiles')
+    .select('id, username, streak')
+    .eq('is_banned', false);
+
+  if (!profiles || profiles.length === 0) {
+    renderRankList([]);
+    return;
+  }
+
+  // 获取打卡记录计算积分
+  let checkinsQuery = supabase.from('checkins').select('user_id, points_earned, checkin_date');
+
+  // 获取所有用户 ID
+  const userIds = profiles.map(p => p.id);
+  // Supabase in filter (批量查询)
+  // 简化处理：获取全部 checkins，前端过滤
+  const { data: allCheckins } = await checkinsQuery;
+
+  const userPoints = {};
+  profiles.forEach(p => {
+    let points = 0;
+    if (allCheckins) {
+      allCheckins.forEach(c => {
+        if (c.user_id === p.id) {
+          const isInWeek = type === 'week' ? new Date(c.checkin_date) >= monday : true;
+          if (isInWeek) points += c.points_earned || 0;
+        }
+      });
+    }
+    userPoints[p.id] = {
+      username: p.username,
+      points,
+      streak: p.streak || 0,
+    };
+  });
+
+  const ranked = Object.values(userPoints).sort((a, b) => b.points - a.points);
+  renderRankList(ranked);
+}
+
+function renderRankList(ranked) {
+  const container = document.getElementById('rankList');
+  const myCard = document.getElementById('myRankCard');
+  const myUsername = currentProfile?.username;
+
+  if (ranked.length === 0) {
+    container.innerHTML = `<p style="text-align:center;color:var(--text-muted);padding:20px;">暂无排行数据</p>`;
+    myCard.style.display = 'none';
+    return;
+  }
+
+  // 找我的排名
+  const myIndex = ranked.findIndex(u => u.username === myUsername);
+  const myRank = myIndex >= 0 ? myIndex + 1 : '-';
+  const myData = myIndex >= 0 ? ranked[myIndex] : null;
+
+  // 更新我的排名卡片
+  if (myData) {
+    myCard.style.display = 'flex';
+    document.getElementById('myRankNum').textContent = myRank;
+    document.getElementById('myRankName').textContent = myData.username;
+    document.getElementById('myRankStreak').textContent = myData.streak;
+    document.getElementById('myRankPoints').textContent = myData.points;
+  } else {
+    myCard.style.display = 'none';
+  }
+
+  // 渲染列表（TOP 30）
+  const topN = ranked.slice(0, 30);
+  container.innerHTML = topN.map((user, i) => {
+    const rank = i + 1;
+    const medals = ['🥇', '🥈', '🥉'];
+    const rankDisplay = rank <= 3 ? medals[rank - 1] : rank;
+    const isMe = user.username === myUsername;
+    const avatarEmojis = ['🦊', '🐼', '🐨', '🐰', '🦁', '🐱', '🐶', '🐮', '🐸', '🐵'];
+    const avatar = avatarEmojis[rank % avatarEmojis.length];
+
+    return `
+      <div class="rank-item ${isMe ? 'is-me' : ''}">
+        <span class="rank-index">${rankDisplay}</span>
+        <span class="rank-avatar">${avatar}</span>
+        <div class="rank-info">
+          <div class="rank-name">${user.username}${isMe ? ' 👈' : ''}</div>
+          <div class="rank-streak">🔥 ${user.streak} 天</div>
+        </div>
+        <span class="rank-points">${user.points} 分</span>
+      </div>
+    `;
+  }).join('');
+
+  // 如果我不在前 30 名但存在
+  if (myIndex >= 30 && myData) {
+    container.innerHTML += `
+      <div style="text-align:center;color:var(--text-muted);padding:8px;font-size:0.8rem;">···</div>
+      <div class="rank-item is-me">
+        <span class="rank-index">${myRank}</span>
+        <span class="rank-avatar">⭐</span>
+        <div class="rank-info">
+          <div class="rank-name">${myData.username} 👈</div>
+          <div class="rank-streak">🔥 ${myData.streak} 天</div>
+        </div>
+        <span class="rank-points">${myData.points} 分</span>
+      </div>
+    `;
+  }
+}
+
+// ============================================
+// 数据榜单
+// ============================================
+// 演示榜单数据（模拟公开网页数据）
+const DEMO_RANKING_CATEGORIES = [
+  { id: 1, name: '微博粉丝榜', icon: '📊', sort_order: 1 },
+  { id: 2, name: '抖音播放榜', icon: '🎵', sort_order: 2 },
+  { id: 3, name: '超话活跃榜', icon: '🔥', sort_order: 3 },
+  { id: 4, name: 'B站涨粉榜',  icon: '📺', sort_order: 4 },
+];
+
+function generateDemoRankingItems() {
+  // 优先使用管理员录入的榜单数据
+  const result = {};
+  DEMO_RANKING_CATEGORIES.forEach(cat => {
+    const adminItems = demoLoad(`demo_rank_items_${cat.id}`, null);
+    if (adminItems && adminItems.length > 0) {
+      // 使用管理员录入的真实数据
+      const items = adminItems.map((item, i) => ({
+        rank: i + 1,
+        name: item.name,
+        value: item.value,
+        prev_value: item.prev_value,
+        change_amount: item.change_amount || 0,
+        change_percent: item.change_percent || 0,
+      }));
+      items.sort((a, b) => b.value - a.value);
+      items.forEach((item, i) => { item.rank = i + 1; });
+      result[cat.id] = items;
+      return;
+    }
+
+    // 回退：自动生成 mock 数据
+    const names = {
+      1: ['TF-张极', 'TF-左航', 'TF-苏新皓', 'TF-朱志鑫', 'TF-张泽禹', 'TF-张峻豪', 'TF-余宇涵', 'TF-穆祉丞', 'TF-陈天润', 'TF-童禹坤', 'TF-邓佳鑫', 'TF-黄朔', 'TF-赵冠羽', 'TF-李煜东', 'TF-王烁然', 'TF-杨涵博', 'TF-陈奕恒', 'TF-智恩涵', 'TF-魏子宸', 'TF-张奕然'],
+      2: ['TF家族', '张极个人', '左航日常', '朱志鑫舞蹈', '苏新皓翻跳', '张泽禹弹唱', '时代少年团', '张峻豪Rap', '余宇涵Vlog', '三代练习室', '邓佳鑫Cover', '黄朔日常', '李煜东直拍', '王烁然弹唱', '杨涵博舞蹈', '陈奕恒翻跳', '智恩涵练习', '赵冠羽Vlog', '魏子宸日常', '张奕然Cover'],
+      3: ['朱志鑫超话', '张极超话', '左航超话', '苏新皓超话', '张泽禹超话', '余宇涵超话', '张峻豪超话', '穆祉丞超话', '陈天润超话', '童禹坤超话', '邓佳鑫超话', '黄朔超话', '李煜东超话', '王烁然超话', '杨涵博超话', '陈奕恒超话', '智恩涵超话', '赵冠羽超话', '魏子宸超话', '张奕然超话'],
+      4: ['朱志鑫', '张极', '左航', '苏新皓', '张泽禹', 'TF家族官方', '余宇涵', '张峻豪', '穆祉丞', '陈天润', '童禹坤', '邓佳鑫', '黄朔', '李煜东', '王烁然', '杨涵博', '陈奕恒', '智恩涵', '赵冠羽', '魏子宸'],
+    };
+
+    const items = names[cat.id].map((name, i) => {
+      let baseValue = name.includes('李煜东')
+        ? Math.floor(400000 + Math.random() * 200000)
+        : Math.floor(100000 + Math.random() * 900000);
+      const prevValue = demoLoad(`demo_prev_${cat.id}_${i}`, baseValue);
+      const currentValue = Math.max(0, prevValue + Math.floor((Math.random() - 0.45) * 50000));
+      localStorage.setItem(`demo_prev_${cat.id}_${i}`, currentValue);
+      const change = currentValue - prevValue;
+      const percent = prevValue > 0 ? ((change / prevValue) * 100) : 0;
+      return { rank: i + 1, name, value: currentValue, prev_value: prevValue,
+               change_amount: change, change_percent: parseFloat(percent.toFixed(1)) };
+    });
+    items.sort((a, b) => b.value - a.value);
+    items.forEach((item, i) => { item.rank = i + 1; });
+    result[cat.id] = items;
+  });
+
+  return result;
+}
+
+let currentRankingCatId = null;
+let rankingData = {};
+
+function setupRankings() {
+  // 渲染分类 Tab
+  const catContainer = document.getElementById('rankingCategories');
+  catContainer.innerHTML = DEMO_RANKING_CATEGORIES.map(cat =>
+    `<button class="ranking-cat-btn" data-cat-id="${cat.id}">${cat.icon} ${cat.name}</button>`
+  ).join('');
+
+  // 绑定分类切换
+  catContainer.querySelectorAll('.ranking-cat-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      catContainer.querySelectorAll('.ranking-cat-btn').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      currentRankingCatId = parseInt(btn.dataset.catId);
+      renderRankingList(currentRankingCatId);
+    });
+  });
+
+  // 刷新按钮
+  document.getElementById('btnRefreshRanking')?.addEventListener('click', () => {
+    rankingData = generateDemoRankingItems();
+    document.getElementById('rankingUpdateTime').textContent =
+      `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
+    if (currentRankingCatId) renderRankingList(currentRankingCatId);
+    showToast('榜单已刷新', 'info');
+  });
+
+  // 初始化数据
+  rankingData = generateDemoRankingItems();
+  document.getElementById('rankingUpdateTime').textContent =
+    `更新于 ${new Date().toLocaleTimeString('zh-CN')}`;
+
+  // 默认选中第一个分类
+  const firstBtn = catContainer.querySelector('.ranking-cat-btn');
+  if (firstBtn) {
+    firstBtn.classList.add('active');
+    currentRankingCatId = parseInt(firstBtn.dataset.catId);
+    renderRankingList(currentRankingCatId);
+  }
+}
+
+function formatBigNum(n) {
+  if (n >= 100000000) return (n / 100000000).toFixed(1) + '亿';
+  if (n >= 10000) return (n / 10000).toFixed(1) + '万';
+  return n.toLocaleString();
+}
+
+function renderRankingList(catId) {
+  const items = rankingData[catId] || [];
+  const container = document.getElementById('rankingList');
+
+  if (items.length === 0) {
+    container.innerHTML = `<p style="text-align:center;color:var(--text-muted);padding:20px;">暂无数据</p>`;
+    return;
+  }
+
+  const medals = ['🥇', '🥈', '🥉'];
+  let focusIndex = -1;
+
+  container.innerHTML = items.map((item, i) => {
+    const rank = i + 1;
+    const rankDisplay = rank <= 3 ? medals[rank - 1] : rank;
+    const changeClass = item.change_amount > 0 ? 'change-up' : item.change_amount < 0 ? 'change-down' : 'change-zero';
+    const arrow = item.change_amount > 0 ? '▲' : item.change_amount < 0 ? '▼' : '─';
+    const absAmount = Math.abs(item.change_amount);
+    const isFocus = item.name.includes('李煜东');
+
+    if (isFocus) focusIndex = i;
+
+    return `
+      <div class="ranking-item ${isFocus ? 'ranking-focus' : ''}" data-focus="${isFocus ? 'true' : 'false'}">
+        <span class="ranking-rank">${rankDisplay}</span>
+        <div class="ranking-info">
+          <div class="ranking-name">${item.name}</div>
+          <div class="ranking-value">${formatBigNum(item.value)}</div>
+        </div>
+        <div class="ranking-change ${changeClass}">
+          <span class="arrow">${arrow}</span> ${formatBigNum(absAmount)}
+          <div style="font-size:0.7rem;">${item.change_percent >= 0 ? '+' : ''}${item.change_percent}%</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // 自动滚动到"李煜东"
+  if (focusIndex >= 0) {
+    setTimeout(() => {
+      const focusEl = container.querySelector('.ranking-focus');
+      if (focusEl) {
+        focusEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        // 短暂高亮闪烁效果
+        focusEl.classList.add('ranking-flash');
+        setTimeout(() => focusEl.classList.remove('ranking-flash'), 1500);
+      }
+    }, 200);
+  }
+}
+
+function refreshRankings() {
+  if (document.getElementById('pageRankings').classList.contains('active')) {
+    if (!currentRankingCatId) {
+      const firstBtn = document.querySelector('.ranking-cat-btn');
+      if (firstBtn) firstBtn.click();
+    }
+  }
+}
+
+// ============================================
+// 快捷跳转 + 截图审核
+// ============================================
+let currentSubmissionApp = null;
+let currentScreenshotData = null;
+
+function setupJumpButtons() {
+  document.querySelectorAll('.jump-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const appName = btn.dataset.app;
+      const scheme = btn.dataset.scheme;
+
+      // 记录当前要提交的 App
+      currentSubmissionApp = appName;
+      currentScreenshotData = null;
+
+      // 显示提交表单
+      document.getElementById('submissionForm').style.display = 'block';
+      document.getElementById('noSubmissionYet').style.display = 'none';
+      document.getElementById('submissionAppName').textContent = appName;
+
+      // 清空预览
+      const preview = document.getElementById('screenshotPreview');
+      preview.style.display = 'none';
+      preview.src = '';
+      document.getElementById('uploadArea').style.display = 'flex';
+      document.getElementById('screenshotFile').value = '';
+
+      // 尝试跳转
+      window.open(scheme, '_blank');
+      showToast(`已尝试打开 ${appName}，完成后请返回提交截图`, 'info');
+    });
+  });
+}
+
+function setupUploadArea() {
+  const uploadArea = document.getElementById('uploadArea');
+  const fileInput = document.getElementById('screenshotFile');
+  const preview = document.getElementById('screenshotPreview');
+
+  uploadArea.addEventListener('click', () => fileInput.click());
+
+  fileInput.addEventListener('change', () => {
+    const file = fileInput.files[0];
+    if (!file) return;
+
+    // 检查文件大小（最大 5MB）
+    if (file.size > 5 * 1024 * 1024) {
+      showToast('图片不能超过 5MB', 'error');
+      fileInput.value = '';
+      return;
+    }
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      currentScreenshotData = reader.result;
+      preview.src = reader.result;
+      preview.style.display = 'block';
+      uploadArea.style.display = 'none';
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function setupSubmissionButtons() {
+  document.getElementById('btnSubmitScreenshot').addEventListener('click', async () => {
+    if (!currentScreenshotData) {
+      showToast('请先上传截图', 'error');
+      return;
+    }
+    if (!currentSubmissionApp) {
+      showToast('请先选择跳转 App', 'error');
+      return;
+    }
+
+    const submission = {
+      id: 'sub_' + Date.now(),
+      username: currentProfile.username,
+      app_name: currentSubmissionApp,
+      screenshot: currentScreenshotData,
+      status: 'pending',
+      points_awarded: 0,
+      submitted_at: new Date().toISOString(),
+      reviewed_at: null,
+      review_comment: '',
+    };
+
+    if (DEMO_MODE) {
+      const submissions = demoLoad('demo_submissions', []);
+      submissions.unshift(submission);
+      demoSave('demo_submissions', submissions);
+    } else {
+      // Supabase 模式：待实现（需要 Storage bucket）
+      // 暂时也用 localStorage
+      const submissions = demoLoad('demo_submissions', []);
+      submissions.unshift(submission);
+      demoSave('demo_submissions', submissions);
+    }
+
+    // 重置表单
+    resetSubmissionForm();
+    showToast('截图已提交！等待管理员审核', 'success');
+
+    // 刷新历史记录
+    renderSubmissionHistory();
+  });
+
+  document.getElementById('btnCancelSubmission').addEventListener('click', resetSubmissionForm);
+}
+
+function resetSubmissionForm() {
+  currentSubmissionApp = null;
+  currentScreenshotData = null;
+  document.getElementById('submissionForm').style.display = 'none';
+  document.getElementById('noSubmissionYet').style.display = 'block';
+  document.getElementById('screenshotPreview').style.display = 'none';
+  document.getElementById('screenshotPreview').src = '';
+  document.getElementById('uploadArea').style.display = 'flex';
+  document.getElementById('screenshotFile').value = '';
+}
+
+function renderSubmissionHistory() {
+  const container = document.getElementById('submissionHistory');
+  if (!container) return;
+
+  const submissions = demoLoad('demo_submissions', []);
+  const mine = submissions.filter(s => s.username === currentProfile?.username).slice(0, 10);
+
+  if (mine.length === 0) return;
+
+  const statusLabels = { pending: '⏳ 审核中', approved: '✅ 已通过', rejected: '❌ 未通过' };
+
+  container.innerHTML = `
+    <div class="section-header" style="margin-top:4px;">
+      <span>📝 我的提交记录</span>
+    </div>
+    ${mine.map(s => `
+      <div class="submission-card">
+        <span>${s.app_name === '微信' ? '💬' : s.app_name === '抖音' ? '🎵' : s.app_name === '备忘录' ? '📝' : s.app_name === '网易云' ? '🎧' : s.app_name === 'Keep' ? '💪' : s.app_name === 'QQ' ? '🐧' : '📱'}</span>
+        <div class="submission-info">
+          <div>${s.app_name} · ${new Date(s.submitted_at).toLocaleDateString('zh-CN')}</div>
+          <div class="submission-time">
+            ${s.status === 'approved' ? `+${s.points_awarded} 积分` : s.review_comment || ''}
+          </div>
+        </div>
+        <span class="submission-status ${s.status}">${statusLabels[s.status]}</span>
+      </div>
+    `).join('')}
+  `;
+}
+
+// ---- 管理员审核功能（供后续阶段使用） ----
+function adminReviewSubmission(submissionId, approve, comment) {
+  const submissions = demoLoad('demo_submissions', []);
+  const idx = submissions.findIndex(s => s.id === submissionId);
+  if (idx === -1) return false;
+
+  submissions[idx].status = approve ? 'approved' : 'rejected';
+  submissions[idx].reviewed_at = new Date().toISOString();
+  submissions[idx].review_comment = comment || '';
+
+  if (approve) {
+    // 奖励积分（每次审核通过 +5 分）
+    submissions[idx].points_awarded = 5;
+
+    // 更新用户积分
+    const users = demoLoad('demo_users', {});
+    const username = submissions[idx].username;
+    if (users[username]) {
+      users[username].total_points = (users[username].total_points || 0) + 5;
+      demoSave('demo_users', users);
+
+      // 如果是当前用户，同步更新
+      if (username === currentProfile?.username) {
+        currentProfile.total_points += 5;
+        updateUserUI(currentProfile);
+      }
+    }
+  }
+
+  demoSave('demo_submissions', submissions);
+  return true;
+}
+
+// ============================================
+// 底部导航
+// ============================================
+const navItems = document.querySelectorAll('.nav-item');
+const pages = document.querySelectorAll('.page');
+const pageTitle = document.getElementById('pageTitle');
+
+navItems.forEach(item => {
+  item.addEventListener('click', () => {
+    navItems.forEach(n => n.classList.remove('active'));
+    item.classList.add('active');
+    pages.forEach(p => p.classList.remove('active'));
+    document.getElementById(item.dataset.page).classList.add('active');
+    pageTitle.textContent = pageTitles[item.dataset.page] || '每日打卡';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // 切换到"我的"页面时刷新数据
+    if (item.dataset.page === 'pagePoints') {
+      refreshMyPage();
+      renderFeedbackHistory();
+    }
+    // 切换到排行榜页面时刷新
+    if (item.dataset.page === 'pageLeaderboard') {
+      refreshLeaderboard();
+    }
+    // 切换到数据榜单页面时刷新
+    if (item.dataset.page === 'pageRankings') {
+      refreshRankings();
+    }
+  });
+});
+
+// ============================================
+// 退出
+// ============================================
+document.getElementById('btnLogout').addEventListener('click', async () => {
+  if (!confirm('确定要退出登录吗？')) return;
+
+  if (DEMO_MODE) {
+    localStorage.removeItem('demo_session');
+    window.location.href = 'index.html';
+    return;
+  }
+
+  await supabase.auth.signOut();
+  window.location.href = 'index.html';
+});
+
+// ============================================
+// 管理员入口
+// ============================================
+function addAdminEntry(profile) {
+  if (document.getElementById('btnAdmin')) return;
+  const topBar = document.querySelector('.top-bar');
+  const adminBtn = document.createElement('button');
+  adminBtn.id = 'btnAdmin';
+  adminBtn.className = 'top-bar-action';
+  adminBtn.textContent = '⚙️';
+  adminBtn.title = '管理后台';
+  adminBtn.style.marginRight = '8px';
+  adminBtn.addEventListener('click', () => {
+    window.location.href = 'admin.html';
+  });
+  topBar.insertBefore(adminBtn, document.getElementById('btnLogout'));
+}
+
+// ============================================
+// Toast
+// ============================================
+function showToast(text, type = 'info') {
+  const existing = document.querySelector('.toast');
+  if (existing) existing.remove();
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.textContent = text;
+  document.body.appendChild(toast);
+  setTimeout(() => toast.remove(), 2500);
+}
+
+// ============================================
+// 演示模式标识
+// ============================================
+if (DEMO_MODE) {
+  document.addEventListener('DOMContentLoaded', () => {
+    const banner = document.createElement('div');
+    banner.style.cssText = 'background:#E8B84B;color:#4A3728;text-align:center;padding:6px;font-size:0.8rem;font-weight:700;';
+    banner.textContent = '🔧 离线演示模式 — 配置 Supabase 后可正式使用';
+    document.body.insertBefore(banner, document.body.firstChild);
+    document.body.style.paddingTop = '0'; // 覆盖安全区域
+  });
+}
+
+// ============================================
+// 启动
+// ============================================
+async function initApp() {
+  const now = new Date();
+  const weekDays = ['日', '一', '二', '三', '四', '五', '六'];
+  const todayEl = document.getElementById('todayDate');
+  if (todayEl) {
+    todayEl.textContent =
+      `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日 星期${weekDays[now.getDay()]}`;
+  }
+
+  const profile = await checkSession();
+  if (!profile) return;
+
+  calYear = now.getFullYear();
+  calMonth = now.getMonth() + 1;
+  await loadCalendarData(calYear, calMonth);
+  renderCalendar(calYear, calMonth);
+
+  await loadTodayCheckins();
+  const tasks = await loadTasks();
+  renderTasks(tasks);
+
+  await updateStreak();
+
+  document.getElementById('calPrev').addEventListener('click', () => changeMonth(-1));
+  document.getElementById('calNext').addEventListener('click', () => changeMonth(1));
+
+  // 「我的」页面：绑定按钮
+  document.getElementById('btnChangePwd')?.addEventListener('click', showChangePasswordModal);
+  document.getElementById('btnLogout2')?.addEventListener('click', () => {
+    if (confirm('确定要退出登录吗？')) {
+      if (DEMO_MODE) {
+        localStorage.removeItem('demo_session');
+        window.location.href = 'index.html';
+      } else {
+        supabase.auth.signOut().then(() => { window.location.href = 'index.html'; });
+      }
+    }
+  });
+  setupFeedback();
+  refreshMyPage();
+  renderFeedbackHistory();
+
+  // 排行榜
+  setupRankTabs();
+  refreshLeaderboard();
+
+  // 数据榜单
+  setupRankings();
+
+  // 跳转 + 截图审核
+  setupJumpButtons();
+  setupUploadArea();
+  setupSubmissionButtons();
+  renderSubmissionHistory();
+
+  console.log('✅ 打卡应用已启动' + (DEMO_MODE ? ' [演示模式]' : ''));
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  if (DEMO_MODE) {
+    initApp();
+  } else {
+    // 给 SDK 最多 8 秒加载，超时则降级为演示模式
+    const timeout = setTimeout(() => {
+      DEMO_MODE = true;
+      console.warn('⚠️ SDK 加载超时，降级为演示模式');
+      initApp();
+    }, 8000);
+
+    window.addEventListener('supabase-ready', () => {
+      clearTimeout(timeout);
+      if (window.SUPABASE_CONFIGURED_FALLBACK === false) {
+        DEMO_MODE = true;
+      }
+      initApp();
+    }, { once: true });
+  }
+});
+
+// 监听登出（Supabase 就绪后绑定）
+if (!DEMO_MODE) {
+  window.addEventListener('supabase-ready', () => {
+    if (supabase && supabase.auth) {
+      supabase.auth.onAuthStateChange((event) => {
+        if (event === 'SIGNED_OUT') window.location.href = 'index.html';
+      });
+    }
+  });
+}

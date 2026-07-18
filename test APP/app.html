@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#FAF7F2">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="每日打卡">
+  <link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='20' fill='%23C8956C'/><text x='50' y='68' font-size='55' text-anchor='middle' fill='white'>✅</text></svg>">
+  <link rel="manifest" href="manifest.json">
+  <title>每日打卡</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- 顶部栏 -->
+  <div class="top-bar">
+    <span class="top-bar-title" id="pageTitle">📋 每日打卡</span>
+    <button class="top-bar-action" id="btnLogout">退出</button>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 页面1：打卡主页 -->
+  <!-- ============================================ -->
+  <div class="page active" id="pageCheckin">
+    <div class="container">
+      <!-- 用户问候 -->
+      <div class="card text-center" style="padding: 20px;">
+        <p style="font-size: 1.1rem;">👋 你好，<strong id="displayName">...</strong></p>
+        <p style="font-size: 0.85rem; color: var(--text-secondary);">
+          🔥 连续打卡 <strong id="streakCount">0</strong> 天 &nbsp;|&nbsp;
+          ⭐ 积分 <strong id="totalPoints">0</strong>
+        </p>
+      </div>
+
+      <!-- 打卡日历 -->
+      <div class="card" style="padding: 16px;">
+        <div class="calendar-header">
+          <button class="calendar-nav" id="calPrev">◀</button>
+          <span class="calendar-title" id="calTitle">2026年7月</span>
+          <button class="calendar-nav" id="calNext">▶</button>
+        </div>
+        <div class="calendar-weekdays">
+          <span>一</span><span>二</span><span>三</span><span>四</span>
+          <span>五</span><span>六</span><span>日</span>
+        </div>
+        <div class="calendar-grid" id="calGrid"></div>
+      </div>
+
+      <!-- 今日任务 -->
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 12px;">
+          <span style="font-weight: 700; font-size: 1.05rem;">📋 今日任务</span>
+          <span style="font-size: 0.8rem; color: var(--text-secondary);" id="todayDate"></span>
+        </div>
+        <div id="taskList">
+          <p style="text-align:center; color: var(--text-muted); padding: 20px;">
+            加载中...
+          </p>
+        </div>
+      </div>
+
+      <!-- 快捷跳转 + 截图审核 -->
+      <div class="card">
+        <div class="section-header">
+          <span>🎮 快捷跳转</span>
+        </div>
+        <div class="jump-grid">
+          <button class="jump-btn" data-app="微信" data-scheme="weixin://">
+            <span class="jump-icon">💬</span>
+            <span class="jump-name">微信</span>
+          </button>
+          <button class="jump-btn" data-app="抖音" data-scheme="snssdk1128://">
+            <span class="jump-icon">🎵</span>
+            <span class="jump-name">抖音</span>
+          </button>
+          <button class="jump-btn" data-app="备忘录" data-scheme="x-apple-mobilenotes://">
+            <span class="jump-icon">📝</span>
+            <span class="jump-name">备忘录</span>
+          </button>
+          <button class="jump-btn" data-app="网易云" data-scheme="orpheus://">
+            <span class="jump-icon">🎧</span>
+            <span class="jump-name">网易云</span>
+          </button>
+          <button class="jump-btn" data-app="Keep" data-scheme="keep://">
+            <span class="jump-icon">💪</span>
+            <span class="jump-name">Keep</span>
+          </button>
+          <button class="jump-btn" data-app="QQ" data-scheme="mqq://">
+            <span class="jump-icon">🐧</span>
+            <span class="jump-name">QQ</span>
+          </button>
+        </div>
+        <p style="font-size:0.7rem;color:var(--text-muted);text-align:center;margin-top:6px;">
+          💡 点击跳转到对应 App，完成后返回本页提交截图赚积分
+        </p>
+
+        <!-- 截图提交 -->
+        <div style="margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);">
+          <div class="section-header" style="margin-bottom: 8px;">
+            <span>📸 提交截图赚积分</span>
+          </div>
+          <div id="submissionForm" style="display:none;">
+            <p style="font-size:0.8rem;color:var(--text-secondary);margin-bottom:8px;">
+              正在提交：<strong id="submissionAppName">-</strong>
+            </p>
+            <div class="upload-area" id="uploadArea">
+              <span style="font-size:2rem;">📷</span>
+              <span style="font-size:0.85rem;color:var(--text-secondary);">点击上传截图</span>
+              <input type="file" id="screenshotFile" accept="image/*" style="display:none;">
+            </div>
+            <img id="screenshotPreview" style="display:none;width:100%;border-radius:8px;margin-bottom:8px;max-height:200px;object-fit:contain;">
+            <button class="btn btn-primary btn-block btn-sm" id="btnSubmitScreenshot">
+              ✅ 提交审核
+            </button>
+            <button class="btn btn-outline btn-block btn-sm mt-1" id="btnCancelSubmission">
+              取消
+            </button>
+          </div>
+          <div id="noSubmissionYet" style="text-align:center;padding:12px;">
+            <p style="font-size:0.85rem;color:var(--text-muted);">
+              👆 先点击上方 App 图标跳转，完成后回来这里提交截图
+            </p>
+          </div>
+        </div>
+
+        <!-- 审核记录 -->
+        <div id="submissionHistory" style="margin-top: 12px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 页面2：数据榜单（占位，阶段五实现） -->
+  <!-- ============================================ -->
+  <div class="page" id="pageRankings">
+    <div class="container">
+      <!-- 榜单分类 Tab -->
+      <div class="card" style="padding: 8px 12px;">
+        <div class="ranking-categories" id="rankingCategories">
+          <span style="color:var(--text-muted);font-size:0.85rem;">加载中...</span>
+        </div>
+      </div>
+
+      <!-- 更新时间 -->
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:8px 4px;">
+        <span style="font-size:0.75rem;color:var(--text-muted);" id="rankingUpdateTime"></span>
+        <button class="btn btn-sm btn-outline" id="btnRefreshRanking">🔄 刷新</button>
+      </div>
+
+      <!-- 排行列表 -->
+      <div class="card" style="padding: 4px 16px;">
+        <div id="rankingList">
+          <p style="text-align:center;color:var(--text-muted);padding:20px;">请选择榜单分类</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 页面3：积分排行 -->
+  <!-- ============================================ -->
+  <div class="page" id="pageLeaderboard">
+    <div class="container">
+
+      <!-- 排行切换 -->
+      <div class="card" style="padding: 12px 16px;">
+        <div class="rank-tabs">
+          <button class="rank-tab active" data-rank="total">🏆 总积分榜</button>
+          <button class="rank-tab" data-rank="week">📅 本周榜</button>
+        </div>
+      </div>
+
+      <!-- 我的排名卡片 -->
+      <div class="card my-rank-card" id="myRankCard" style="display:none;">
+        <div class="my-rank-left">
+          <span class="my-rank-num" id="myRankNum">-</span>
+          <div>
+            <div class="my-rank-name">👤 <span id="myRankName">...</span></div>
+            <div class="my-rank-streak">🔥 <span id="myRankStreak">0</span> 天</div>
+          </div>
+        </div>
+        <div class="my-rank-right">
+          <span class="my-rank-points" id="myRankPoints">0</span>
+          <span class="my-rank-label">积分</span>
+        </div>
+      </div>
+
+      <!-- 排行列表 -->
+      <div class="card" style="padding: 8px 16px;">
+        <div id="rankList">
+          <p style="text-align:center;color:var(--text-muted);padding:20px;">加载中...</p>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 页面4：我的（积分 + 账户管理 + 联系客服） -->
+  <!-- ============================================ -->
+  <div class="page" id="pagePoints">
+    <div class="container">
+
+      <!-- 积分概览卡片 -->
+      <div class="card points-hero text-center">
+        <div class="points-badge">⭐</div>
+        <div class="points-number" id="myTotalPoints">0</div>
+        <div class="points-label">累计积分</div>
+        <div class="points-stats">
+          <div class="stat-item">
+            <span class="stat-value" id="myStreak">0</span>
+            <span class="stat-label">🔥 连续天数</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat-item">
+            <span class="stat-value" id="myTodayCount">0</span>
+            <span class="stat-label">✅ 今日打卡</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat-item">
+            <span class="stat-value" id="myWeekPoints">0</span>
+            <span class="stat-label">📈 本周积分</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- 积分明细 -->
+      <div class="card">
+        <div class="section-header">
+          <span>📋 积分明细</span>
+          <span class="section-hint" id="pointsRange"></span>
+        </div>
+        <div id="pointsHistory">
+          <p style="text-align:center; color: var(--text-muted); padding: 12px;">加载中...</p>
+        </div>
+      </div>
+
+      <!-- 账户管理 -->
+      <div class="card">
+        <div class="section-header">
+          <span>⚙️ 账户管理</span>
+        </div>
+        <div class="menu-list">
+          <button class="menu-item" id="btnChangePwd">
+            <span>🔑 修改密码</span>
+            <span class="menu-arrow">›</span>
+          </button>
+          <button class="menu-item" id="btnLogout2">
+            <span>🚪 退出登录</span>
+            <span class="menu-arrow">›</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 联系客服 -->
+      <div class="card">
+        <div class="section-header">
+          <span>💬 联系客服</span>
+        </div>
+        <p style="font-size:0.85rem;color:var(--text-secondary);margin-bottom:12px;">
+          如有问题或建议，请留言反馈，我们会尽快回复。
+        </p>
+        <form id="formFeedback" autocomplete="off">
+          <div class="form-group">
+            <textarea class="form-input" id="feedbackMsg" rows="3"
+                      placeholder="请输入您的反馈内容..." maxlength="500"></textarea>
+          </div>
+          <button class="btn btn-primary btn-block" type="submit">📨 发送反馈</button>
+        </form>
+        <div id="feedbackHistory" style="margin-top: 12px;"></div>
+      </div>
+
+      <!-- 应用信息 -->
+      <p style="text-align:center;font-size:0.75rem;color:var(--text-muted);padding:16px 0;">
+        每日打卡 v1.0 · Made with ❤️
+      </p>
+
+    </div>
+  </div>
+
+  <!-- ============================================ -->
+  <!-- 底部导航栏 -->
+  <!-- ============================================ -->
+  <nav class="bottom-nav">
+    <button class="nav-item active" data-page="pageCheckin">
+      <span class="nav-icon">📋</span>
+      <span class="nav-label">打卡</span>
+    </button>
+    <button class="nav-item" data-page="pageRankings">
+      <span class="nav-icon">📊</span>
+      <span class="nav-label">榜单</span>
+    </button>
+    <button class="nav-item" data-page="pageLeaderboard">
+      <span class="nav-icon">🏆</span>
+      <span class="nav-label">排行</span>
+    </button>
+    <button class="nav-item" data-page="pagePoints">
+      <span class="nav-icon">👤</span>
+      <span class="nav-label">我的</span>
+    </button>
+  </nav>
+
+  <!-- 应用脚本 -->
+  <script src="js/supabase.js"></script>
+  <script src="js/app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('sw.js').catch(() => {});
+    }
+  </script>
+</body>
+</html>
