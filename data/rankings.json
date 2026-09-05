@@ -1,5 +1,5 @@
 {
-  "updated_at": "2026-09-05T07:46:15.471+08:00",
+  "updated_at": "2026-09-05T11:18:04.052+08:00",
   "fetch_time": "10:00",
   "categories": {
     "xunyee_check": {
@@ -11,34 +11,34 @@
         {
           "name": "王橹杰",
           "person_id": 198331,
-          "value": 1675,
+          "value": 3307,
           "prev_value": 8615,
-          "change_amount": -6940,
-          "change_percent": -80.6
+          "change_amount": -5308,
+          "change_percent": -61.6
         },
         {
           "name": "张桂源",
           "person_id": 198330,
-          "value": 654,
+          "value": 1152,
           "prev_value": 3096,
-          "change_amount": -2442,
-          "change_percent": -78.9
+          "change_amount": -1944,
+          "change_percent": -62.8
         },
         {
           "name": "杨博文",
           "person_id": 198332,
-          "value": 547,
+          "value": 978,
           "prev_value": 2584,
-          "change_amount": -2037,
-          "change_percent": -78.8
+          "change_amount": -1606,
+          "change_percent": -62.2
         },
         {
           "name": "李煜东",
           "person_id": 198342,
-          "value": 275,
+          "value": 590,
           "prev_value": 1409,
-          "change_amount": -1134,
-          "change_percent": -80.5
+          "change_amount": -819,
+          "change_percent": -58.1
         }
       ]
     }
