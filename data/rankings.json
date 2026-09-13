@@ -1,6 +1,6 @@
 {
-  "updated_at": "2026-09-13T11:33:58.107+08:00",
-  "fetch_time": "10:00",
+  "updated_at": "2026-09-13T17:05:40.962+08:00",
+  "fetch_time": "22:00",
   "categories": {
     "xunyee_check": {
       "name": "寻艺点赞",
@@ -11,34 +11,34 @@
         {
           "name": "王橹杰",
           "person_id": 198331,
-          "value": 2575,
-          "prev_value": 5319,
-          "change_amount": -2744,
-          "change_percent": -51.6
+          "value": 4088,
+          "prev_value": 2575,
+          "change_amount": 1513,
+          "change_percent": 58.8
         },
         {
           "name": "张桂源",
           "person_id": 198330,
-          "value": 1000,
-          "prev_value": 2132,
-          "change_amount": -1132,
-          "change_percent": -53.1
+          "value": 1613,
+          "prev_value": 1000,
+          "change_amount": 613,
+          "change_percent": 61.3
         },
         {
           "name": "杨博文",
           "person_id": 198332,
-          "value": 745,
-          "prev_value": 1454,
-          "change_amount": -709,
-          "change_percent": -48.8
+          "value": 1161,
+          "prev_value": 745,
+          "change_amount": 416,
+          "change_percent": 55.8
         },
         {
           "name": "李煜东",
           "person_id": 198342,
-          "value": 487,
-          "prev_value": 995,
-          "change_amount": -508,
-          "change_percent": -51.1
+          "value": 891,
+          "prev_value": 487,
+          "change_amount": 404,
+          "change_percent": 83
         }
       ]
     }
